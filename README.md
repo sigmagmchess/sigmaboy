@@ -24,18 +24,24 @@ Tek dosyayı yeniden üretmek için: `node build.js`
 Arama:
 - **İteratif derinleşme** + **aspirasyon pencereleri**
 - **Alpha-beta (negamax) + PVS** (Principal Variation Search)
-- **Transpozisyon tablosu** (2M giriş, çift 32-bit Zobrist anahtarı)
-- **Null-move pruning**, **late move reductions (LMR)**, **futility pruning**, **mate-distance pruning**
-- **Quiescence search** (şah kaçışları + delta pruning)
-- Hamle sıralama: TT hamlesi → **MVV-LVA** → **killer moves** (2/kat) → **history heuristic**
-- Şah uzatması, tekrar/50 hamle tespiti, **çoklu-PV** (analiz için 1-5 hat)
+- **Transpozisyon tablosu** (2M giriş, çift 32-bit Zobrist anahtarı, yaş + derinlik öncelikli değiştirme)
+- **Null-move pruning** (dinamik R), **reverse futility (static null move)**, **razoring**
+- **Late move reductions** (logaritmik tablo, improving/killer ayarlı), **late move pruning**, **futility pruning**, **mate-distance pruning**
+- **SEE (Static Exchange Evaluation)**: quiescence'ta ve sığ derinlikte kaybeden alışların budanması
+- **Quiescence search** (şah kaçışları + delta pruning + SEE)
+- Hamle sıralama: TT hamlesi → **MVV-LVA** → **killer moves** (2/kat) → **countermove** → **history heuristic**
+- **Internal iterative deepening (IID)**, şah uzatması, tekrar/50 hamle tespiti, **çoklu-PV** (1-5 hat)
 
 Değerlendirme (tapered mg/eg):
 - PeSTO tarzı taş-kare tabloları
-- Piyon yapısı: geçer / çift / izole piyonlar
-- Fil çifti, (yarı) açık hatta kale, şah piyon kalkanı, hareketlilik, tempo
+- Piyon yapısı: geçer (abluka cezalı) / çift / izole piyonlar
+- **Şah güvenliği**: saldırı bölgesi birimleri (vezir varlığına duyarlı) + piyon kalkanı
+- Fil çifti, (yarı) açık hatta kale, hareketlilik, tempo
 
-Ekstra: ~50 ana varyanttan kurulan **açılış kitabı** (670 pozisyon), 8 güç seviyesi (zayıf seviyelerde insansı gürültülü seçim).
+Ekstra: ~50 ana varyanttan kurulan **açılış kitabı** (670 pozisyon), 9 güç seviyesi (zayıf seviyelerde insansı gürültülü seçim).
+
+Ölçüm (v2 motoru, v1'e karşı 20 oyunluk maç, hamle başına 150 ms):
+**+13 =4 -3 (%75) ≈ +190 Elo**. Başlangıç pozisyonunda 3 saniyede ulaşılan derinlik: 11 → **15**.
 
 ## Arayüz
 

@@ -95,35 +95,49 @@ const KNIGHT_D = [-33, -31, -18, -14, 14, 18, 31, 33];
 const BISHOP_D = [-17, -15, 15, 17];
 const ROOK_D   = [-16, -1, 1, 16];
 const QUEEN_D  = [-17, -16, -15, -1, 1, 15, 16, 17];
+const KING_D   = QUEEN_D;
+
+// king-zone attack units → middlegame penalty for the defender
+const KS_WEIGHT = [0, 0, 2, 2, 3, 5, 0]; // per piece type per attacked zone square
+const KS_TABLE = (() => {
+  const t = new Int16Array(64);
+  for (let i = 0; i < 64; i++) t[i] = Math.min(250, (i * i * 3) >> 2);
+  return t;
+})();
+
+// reusable evaluation scratch buffers (avoid per-node allocation)
+const EV_wFile = new Int8Array(10), EV_bFile = new Int8Array(10);
+// sized generously: editor positions may hold more than 8 pawns per side
+const EV_wPawns = new Uint8Array(64), EV_bPawns = new Uint8Array(64);
+const EV_zoneW = new Uint8Array(136), EV_zoneB = new Uint8Array(136);
 
 // returns score in centipawns from the side-to-move perspective
 function evaluate(pos) {
   const b = pos.board;
   let mg = 0, eg = 0, phase = 0;
-  let wBishops = 0, bBishops = 0;
+  let wBishops = 0, bBishops = 0, wQueens = 0, bQueens = 0;
 
-  // pawn file info: counts + foremost ranks
-  const wPawnFile = new Int8Array(10), bPawnFile = new Int8Array(10); // 1..8 used
-  const wPawnMostAdv = new Int8Array(10).fill(8);  // smallest rank index (closest to rank 8)
-  const bPawnMostAdv = new Int8Array(10).fill(-1); // largest rank index (closest to rank 1)
-  const wPawns = [], bPawns = [];
-
+  // pawn pre-pass: file counts + squares (reusable buffers)
+  EV_wFile.fill(0); EV_bFile.fill(0);
+  let wpc = 0, bpc = 0;
   for (let sq = 0; sq < 120; sq++) {
     if (sq & 0x88) { sq += 7; continue; }
     const p = b[sq];
-    if (!p) continue;
-    const t = p > 0 ? p : -p;
-    if (t === PAWN) {
-      const f = (sq & 7) + 1, r = sq >> 4;
-      if (p > 0) {
-        wPawnFile[f]++; wPawns.push(sq);
-        if (r < wPawnMostAdv[f]) wPawnMostAdv[f] = r;
-      } else {
-        bPawnFile[f]++; bPawns.push(sq);
-        if (r > bPawnMostAdv[f]) bPawnMostAdv[f] = r;
-      }
-    }
+    if (p === PAWN) { EV_wFile[(sq & 7) + 1]++; EV_wPawns[wpc++] = sq; }
+    else if (p === -PAWN) { EV_bFile[(sq & 7) + 1]++; EV_bPawns[bpc++] = sq; }
   }
+
+  // king attack zones (own king square + neighbors)
+  EV_zoneW.fill(0); EV_zoneB.fill(0);
+  const wk = pos.kings[0], bk = pos.kings[1];
+  EV_zoneW[wk] = 1; EV_zoneB[bk] = 1;
+  for (let i = 0; i < 8; i++) {
+    let t = wk + KING_D[i];
+    if (!(t & 0x88)) EV_zoneW[t] = 1;
+    t = bk + KING_D[i];
+    if (!(t & 0x88)) EV_zoneB[t] = 1;
+  }
+  let unitsOnW = 0, unitsOnB = 0; // attack units against each king
 
   for (let sq = 0; sq < 120; sq++) {
     if (sq & 0x88) { sq += 7; continue; }
@@ -139,14 +153,19 @@ function evaluate(pos) {
     phase += PHASE_W[t];
 
     if (t === BISHOP) { if (white) wBishops++; else bBishops++; }
+    else if (t === QUEEN) { if (white) wQueens++; else bQueens++; }
 
-    // mobility (cheap: pseudo destination count, own pieces excluded)
+    // mobility + king-zone attacks in one scan
     if (t >= KNIGHT && t <= QUEEN) {
       let mob = 0;
+      const kw = KS_WEIGHT[t];
       if (t === KNIGHT) {
         for (let i = 0; i < 8; i++) {
           const to = sq + KNIGHT_D[i];
-          if (!(to & 0x88) && (b[to] === 0 || (b[to] > 0) !== white)) mob++;
+          if (to & 0x88) continue;
+          if (b[to] === 0 || (b[to] > 0) !== white) mob++;
+          if (white) { if (EV_zoneB[to]) unitsOnB += kw; }
+          else if (EV_zoneW[to]) unitsOnW += kw;
         }
       } else {
         const dirs = t === BISHOP ? BISHOP_D : t === ROOK ? ROOK_D : QUEEN_D;
@@ -154,6 +173,8 @@ function evaluate(pos) {
         for (let i = 0; i < nd; i++) {
           const d = dirs[i];
           for (let to = sq + d; !(to & 0x88); to += d) {
+            if (white) { if (EV_zoneB[to]) unitsOnB += kw; }
+            else if (EV_zoneW[to]) unitsOnW += kw;
             if (b[to] === 0) { mob++; continue; }
             if ((b[to] > 0) !== white) mob++;
             break;
@@ -167,8 +188,8 @@ function evaluate(pos) {
     // rook on (semi-)open file
     if (t === ROOK) {
       const f = (sq & 7) + 1;
-      const own = white ? wPawnFile[f] : bPawnFile[f];
-      const opp = white ? bPawnFile[f] : wPawnFile[f];
+      const own = white ? EV_wFile[f] : EV_bFile[f];
+      const opp = white ? EV_bFile[f] : EV_wFile[f];
       if (own === 0) {
         if (opp === 0) { mg += sgn * ROOK_OPEN_MG; eg += sgn * ROOK_OPEN_EG; }
         else { mg += sgn * ROOK_SEMI_MG; eg += sgn * ROOK_SEMI_EG; }
@@ -179,24 +200,35 @@ function evaluate(pos) {
   if (wBishops >= 2) { mg += BISHOP_PAIR_MG; eg += BISHOP_PAIR_EG; }
   if (bBishops >= 2) { mg -= BISHOP_PAIR_MG; eg -= BISHOP_PAIR_EG; }
 
+  // king safety: attack units → table (halved without the attacker's queen)
+  if (!wQueens) unitsOnB >>= 1;
+  if (!bQueens) unitsOnW >>= 1;
+  mg += KS_TABLE[unitsOnB > 63 ? 63 : unitsOnB];
+  mg -= KS_TABLE[unitsOnW > 63 ? 63 : unitsOnW];
+
   // pawn structure
-  for (const sq of wPawns) {
+  for (let i = 0; i < wpc; i++) {
+    const sq = EV_wPawns[i];
     const f = (sq & 7) + 1, r = sq >> 4;
-    if (wPawnFile[f] > 1) { mg += DOUBLED_MG / 2; eg += DOUBLED_EG / 2; }
-    if (wPawnFile[f - 1] === 0 && wPawnFile[f + 1] === 0) { mg += ISOLATED_MG; eg += ISOLATED_EG; }
-    // passed: no black pawn ahead on same/adjacent files
+    if (EV_wFile[f] > 1) { mg += DOUBLED_MG >> 1; eg += DOUBLED_EG >> 1; }
+    if (EV_wFile[f - 1] === 0 && EV_wFile[f + 1] === 0) { mg += ISOLATED_MG; eg += ISOLATED_EG; }
     if (!hasEnemyPawnAhead(b, sq, true)) {
-      const adv = 7 - r; // advancement steps, 1..6 realistic
-      mg += PASSED_MG[adv] || 0; eg += PASSED_EG[adv] || 0;
+      const adv = 7 - r;
+      let pm = PASSED_MG[adv] || 0, pe = PASSED_EG[adv] || 0;
+      if (b[sq - 16]) { pm = (pm * 2 / 3) | 0; pe = (pe * 2 / 3) | 0; } // blockaded
+      mg += pm; eg += pe;
     }
   }
-  for (const sq of bPawns) {
+  for (let i = 0; i < bpc; i++) {
+    const sq = EV_bPawns[i];
     const f = (sq & 7) + 1, r = sq >> 4;
-    if (bPawnFile[f] > 1) { mg -= DOUBLED_MG / 2; eg -= DOUBLED_EG / 2; }
-    if (bPawnFile[f - 1] === 0 && bPawnFile[f + 1] === 0) { mg -= ISOLATED_MG; eg -= ISOLATED_EG; }
+    if (EV_bFile[f] > 1) { mg -= DOUBLED_MG >> 1; eg -= DOUBLED_EG >> 1; }
+    if (EV_bFile[f - 1] === 0 && EV_bFile[f + 1] === 0) { mg -= ISOLATED_MG; eg -= ISOLATED_EG; }
     if (!hasEnemyPawnAhead(b, sq, false)) {
       const adv = r;
-      mg -= PASSED_MG[adv] || 0; eg -= PASSED_EG[adv] || 0;
+      let pm = PASSED_MG[adv] || 0, pe = PASSED_EG[adv] || 0;
+      if (b[sq + 16]) { pm = (pm * 2 / 3) | 0; pe = (pe * 2 / 3) | 0; }
+      mg -= pm; eg -= pe;
     }
   }
 
@@ -245,6 +277,22 @@ const TT_SIZE = 1 << 21, TT_MASK = TT_SIZE - 1;
 const TT_EXACT = 1, TT_LOWER = 2, TT_UPPER = 3;
 const MAX_PLY = 96;
 
+// log-based late-move-reduction table [depth][moveNumber]
+const LMR_TABLE = (() => {
+  const t = [];
+  for (let d = 0; d < 64; d++) {
+    t.push(new Int8Array(64));
+    for (let m = 0; m < 64; m++) {
+      t[d][m] = (d > 0 && m > 0) ? Math.max(0, Math.round(0.5 + Math.log(d) * Math.log(m) / 2.4)) : 0;
+    }
+  }
+  return t;
+})();
+
+// static-exchange-evaluation scratch buffers
+const SEE_GAIN = new Int32Array(34);
+const SEE_RS = new Int32Array(34), SEE_RP = new Int32Array(34);
+
 class AbortSearch extends Error {}
 
 class Engine {
@@ -255,12 +303,20 @@ class Engine {
     this.ttScore = new Int16Array(TT_SIZE);
     this.ttDepth = new Int8Array(TT_SIZE);
     this.ttFlag  = new Uint8Array(TT_SIZE);
+    this.ttAge   = new Uint8Array(TT_SIZE);
+    this.age = 0;
     this.killer1 = new Int32Array(MAX_PLY);
     this.killer2 = new Int32Array(MAX_PLY);
     this.history = new Int32Array(2 * 7 * 128);
+    this.counter = new Int32Array(2 * 7 * 128); // countermove heuristic
+    this.evalStack = new Int32Array(MAX_PLY);
     this.pvTable = [];
     this.pvLen = new Int32Array(MAX_PLY);
-    for (let i = 0; i < MAX_PLY; i++) this.pvTable.push(new Int32Array(MAX_PLY));
+    this.scoreBufs = [];
+    for (let i = 0; i < MAX_PLY; i++) {
+      this.pvTable.push(new Int32Array(MAX_PLY));
+      this.scoreBufs.push(new Int32Array(256));
+    }
     this.nodes = 0;
     this.stopFlag = false;
     this.deadline = Infinity;
@@ -276,8 +332,9 @@ class Engine {
 
   clearTables() {
     this.ttKey.fill(0); this.ttMove.fill(0); this.ttScore.fill(0);
-    this.ttDepth.fill(0); this.ttFlag.fill(0);
-    this.history.fill(0); this.killer1.fill(0); this.killer2.fill(0);
+    this.ttDepth.fill(0); this.ttFlag.fill(0); this.ttAge.fill(0);
+    this.history.fill(0); this.counter.fill(0);
+    this.killer1.fill(0); this.killer2.fill(0);
   }
 
   setPosition(fen, ucis) {
@@ -295,8 +352,78 @@ class Engine {
 
   histIdx(side, piece, to) { return (side === WHITE ? 0 : 7 * 128) + piece * 128 + (to & 127); }
 
+  // countermove slot for the move that led to the current position
+  cmIdx(prevMove, sideToMove) {
+    return (sideToMove === WHITE ? 0 : 7 * 128) + mPiece(prevMove) * 128 + (mTo(prevMove) & 127);
+  }
+
+  // smallest attacker of `to` for `side`, honoring pieces removed during SEE
+  smallestAttacker(to, side) {
+    const b = this.pos.board;
+    let t;
+    if (side === WHITE) {
+      t = to + 15; if (!(t & 0x88) && b[t] === PAWN) return t;
+      t = to + 17; if (!(t & 0x88) && b[t] === PAWN) return t;
+    } else {
+      t = to - 15; if (!(t & 0x88) && b[t] === -PAWN) return t;
+      t = to - 17; if (!(t & 0x88) && b[t] === -PAWN) return t;
+    }
+    const kn = KNIGHT * side;
+    for (let i = 0; i < 8; i++) {
+      t = to + KNIGHT_D[i];
+      if (!(t & 0x88) && b[t] === kn) return t;
+    }
+    const bi = BISHOP * side, ro = ROOK * side, qu = QUEEN * side;
+    for (let i = 0; i < 4; i++) {
+      const d = BISHOP_D[i];
+      for (t = to + d; !(t & 0x88); t += d) { const p = b[t]; if (p) { if (p === bi) return t; break; } }
+    }
+    for (let i = 0; i < 4; i++) {
+      const d = ROOK_D[i];
+      for (t = to + d; !(t & 0x88); t += d) { const p = b[t]; if (p) { if (p === ro) return t; break; } }
+    }
+    for (let i = 0; i < 8; i++) {
+      const d = QUEEN_D[i];
+      for (t = to + d; !(t & 0x88); t += d) { const p = b[t]; if (p) { if (p === qu) return t; break; } }
+    }
+    const ki = KING * side;
+    for (let i = 0; i < 8; i++) {
+      t = to + KING_D[i];
+      if (!(t & 0x88) && b[t] === ki) return t;
+    }
+    return -1;
+  }
+
+  // static exchange evaluation: expected material outcome of a capture (cp)
+  see(m) {
+    if (m & SC.F_EP) return 0;
+    const b = this.pos.board;
+    const to = mTo(m), from = mFrom(m);
+    let d = 0, nr = 0;
+    SEE_GAIN[0] = SEE_VAL[mCapt(m)];
+    let occupierVal = SEE_VAL[mPiece(m)];
+    SEE_RS[nr] = from; SEE_RP[nr++] = b[from]; b[from] = 0;
+    let side = -this.pos.side;
+    for (;;) {
+      const a = this.smallestAttacker(to, side);
+      if (a < 0 || d >= 30) break;
+      d++;
+      SEE_GAIN[d] = occupierVal - SEE_GAIN[d - 1];
+      if (Math.max(-SEE_GAIN[d - 1], SEE_GAIN[d]) < 0) break;
+      occupierVal = SEE_VAL[b[a] > 0 ? b[a] : -b[a]];
+      SEE_RS[nr] = a; SEE_RP[nr++] = b[a]; b[a] = 0;
+      side = -side;
+    }
+    while (nr > 0) { nr--; b[SEE_RS[nr]] = SEE_RP[nr]; }
+    while (d > 0) { SEE_GAIN[d - 1] = -Math.max(-SEE_GAIN[d - 1], SEE_GAIN[d]); d--; }
+    return SEE_GAIN[0];
+  }
+
   scoreMoves(moves, ttMove, ply) {
-    const pos = this.pos, scores = new Int32Array(moves.length);
+    const pos = this.pos;
+    const scores = moves.length <= 256 ? this.scoreBufs[ply] : new Int32Array(moves.length);
+    const prevM = pos.usMove.length ? pos.usMove[pos.usMove.length - 1] : 0;
+    const cm = prevM ? this.counter[this.cmIdx(prevM, pos.side)] : 0;
     for (let i = 0; i < moves.length; i++) {
       const m = moves[i];
       if (m === ttMove) { scores[i] = 2000000000; continue; }
@@ -305,6 +432,7 @@ class Engine {
       else if (promo === QUEEN) scores[i] = 999000000;
       else if (promo) scores[i] = 500000;
       else if (m === this.killer1[ply]) scores[i] = 900000000;
+      else if (m === cm) scores[i] = 850000000;
       else if (m === this.killer2[ply]) scores[i] = 800000000;
       else scores[i] = this.history[this.histIdx(pos.side, mPiece(m), mTo(m))];
     }
@@ -343,8 +471,11 @@ class Engine {
     for (let i = 0; i < moves.length; i++) {
       const m = this.pickMove(moves, scores, i);
       if (!inCheck && !mPromo(m)) {
+        const capt = mCapt(m);
         // delta pruning
-        if (best + SEE_VAL[mCapt(m)] + 200 <= alpha) continue;
+        if (best + SEE_VAL[capt] + 200 <= alpha) continue;
+        // skip losing captures (SEE)
+        if (SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < 0) continue;
       }
       pos.make(m);
       if (pos.illegalAfterMove()) { pos.unmake(); continue; }
@@ -401,31 +532,60 @@ class Engine {
     }
 
     const staticEval = inCheck ? -INF : evaluate(pos);
+    this.evalStack[ply] = staticEval;
+    const improving = !inCheck && ply >= 2 && staticEval > this.evalStack[ply - 2];
 
-    // null-move pruning
-    if (!isPv && !inCheck && nullOk && depth >= 3 && staticEval >= beta &&
-        pos.hasNonPawnMaterial(pos.side)) {
-      const R = 2 + (depth > 6 ? 1 : 0);
-      pos.makeNull();
-      let score;
-      try {
-        score = -this.search(depth - 1 - R, -beta, -beta + 1, ply + 1, false);
-      } finally {
-        pos.unmakeNull();
+    if (!isPv && !inCheck && Math.abs(beta) < MATE_BOUND) {
+      // reverse futility pruning (static null move)
+      if (depth <= 6 && staticEval - (improving ? 70 : 90) * depth >= beta)
+        return staticEval;
+
+      // razoring: hopeless shallow nodes drop to quiescence
+      if (depth <= 2 && staticEval + 200 + 150 * depth < alpha) {
+        const v = this.qsearch(alpha, beta, ply);
+        if (v < alpha) return v;
       }
-      if (score >= beta && score < MATE_BOUND) return beta;
+
+      // null-move pruning
+      if (nullOk && depth >= 3 && staticEval >= beta && pos.hasNonPawnMaterial(pos.side)) {
+        const R = 3 + (depth >> 3) + (staticEval - beta > 200 ? 1 : 0);
+        pos.makeNull();
+        let score;
+        try {
+          score = -this.search(Math.max(0, depth - 1 - R), -beta, -beta + 1, ply + 1, false);
+        } finally {
+          pos.unmakeNull();
+        }
+        if (score >= beta && score < MATE_BOUND) return beta;
+      }
     }
 
-    // futility pruning precondition
-    const futile = !isPv && !inCheck && depth <= 3 && staticEval + 120 * depth <= alpha;
+    // internal iterative deepening: get a TT move for ordering in PV nodes
+    if (isPv && !ttMove && depth >= 5) {
+      this.search(depth - 2, alpha, beta, ply, false);
+      if (this.ttKey[idx] === pos.hashHi) ttMove = this.ttMove[idx];
+    }
+
+    const futile = !isPv && !inCheck && depth <= 3 && staticEval + 100 + 120 * depth <= alpha;
+    const lmpMax = improving ? 4 + depth * depth : 2 + ((depth * depth) >> 1);
 
     const moves = pos.genMoves(false);
     const scores = this.scoreMoves(moves, ttMove, ply);
+    const prevM = pos.usMove.length ? pos.usMove[pos.usMove.length - 1] : 0;
 
     let legal = 0, bestScore = -INF, bestMove = 0, ttStoreFlag = TT_UPPER;
     for (let i = 0; i < moves.length; i++) {
       const m = this.pickMove(moves, scores, i);
-      const quiet = !mIsCapture(m) && !mPromo(m);
+      const capt = mCapt(m), promo = mPromo(m);
+      const quiet = !mIsCapture(m) && !promo;
+
+      if (!isPv && !inCheck && bestScore > -MATE_BOUND && legal > 0) {
+        // late move (move-count) pruning of quiets at shallow depth
+        if (quiet && depth <= 5 && legal >= lmpMax) continue;
+        // prune clearly losing captures at shallow depth (SEE)
+        if (capt && !promo && depth <= 4 &&
+            SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < -80 * depth) continue;
+      }
 
       pos.make(m);
       if (pos.illegalAfterMove()) { pos.unmake(); continue; }
@@ -439,10 +599,17 @@ class Engine {
         if (legal === 1) {
           score = -this.search(depth - 1, -beta, -alpha, ply + 1, true);
         } else {
-          // late move reductions
+          // late move reductions (log table)
           let R = 0;
-          if (depth >= 3 && quiet && !inCheck && !givesCheck && legal > 3)
-            R = 1 + (legal > 12 ? 1 : 0) + (depth > 8 ? 1 : 0);
+          if (quiet && depth >= 3 && !inCheck && !givesCheck && legal > 2) {
+            R = LMR_TABLE[depth > 63 ? 63 : depth][legal > 63 ? 63 : legal];
+            if (isPv) R--;
+            if (!improving) R++;
+            if (m === this.killer1[ply] || m === this.killer2[ply]) R--;
+            if (R < 0) R = 0;
+            const maxR = depth - 2;
+            if (R > maxR) R = maxR > 0 ? maxR : 0;
+          }
           score = -this.search(depth - 1 - R, -alpha - 1, -alpha, ply + 1, true);
           if (score > alpha && R > 0)
             score = -this.search(depth - 1, -alpha - 1, -alpha, ply + 1, true);
@@ -468,6 +635,7 @@ class Engine {
             ttStoreFlag = TT_LOWER;
             if (quiet) {
               if (this.killer1[ply] !== m) { this.killer2[ply] = this.killer1[ply]; this.killer1[ply] = m; }
+              if (prevM) this.counter[this.cmIdx(prevM, pos.side)] = m;
               const hi = this.histIdx(pos.side, mPiece(m), mTo(m));
               this.history[hi] += depth * depth;
               if (this.history[hi] > 400000) for (let k = 0; k < this.history.length; k++) this.history[k] >>= 1;
@@ -480,14 +648,18 @@ class Engine {
 
     if (legal === 0) return inCheck ? -MATE + ply : 0;
 
-    // store to TT
-    let stScore = bestScore;
-    if (stScore > MATE_BOUND) stScore += ply; else if (stScore < -MATE_BOUND) stScore -= ply;
-    this.ttKey[idx] = pos.hashHi;
-    this.ttMove[idx] = bestMove;
-    this.ttScore[idx] = stScore;
-    this.ttDepth[idx] = depth;
-    this.ttFlag[idx] = ttStoreFlag;
+    // store to TT (prefer deeper / fresher entries)
+    if (this.ttFlag[idx] === 0 || this.ttAge[idx] !== this.age ||
+        depth >= this.ttDepth[idx] || ttStoreFlag === TT_EXACT) {
+      let stScore = bestScore;
+      if (stScore > MATE_BOUND) stScore += ply; else if (stScore < -MATE_BOUND) stScore -= ply;
+      this.ttKey[idx] = pos.hashHi;
+      this.ttMove[idx] = bestMove;
+      this.ttScore[idx] = stScore;
+      this.ttDepth[idx] = depth;
+      this.ttFlag[idx] = ttStoreFlag;
+      this.ttAge[idx] = this.age;
+    }
 
     return bestScore;
   }
@@ -583,6 +755,7 @@ class Engine {
     const now = Date.now();
     this.deadline = movetime ? now + movetime : Infinity;
     this.softDeadline = movetime ? now + movetime * 0.6 : Infinity;
+    this.age = (this.age + 1) & 255;
     this.killer1.fill(0); this.killer2.fill(0);
     for (let k = 0; k < this.history.length; k++) this.history[k] = (this.history[k] / 8) | 0;
 
