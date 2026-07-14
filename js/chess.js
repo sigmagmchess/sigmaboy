@@ -112,12 +112,28 @@ class Position {
     this.ep = (parts[3] && parts[3] !== '-') ? algToSq(parts[3]) : -1;
     this.halfmove = parseInt(parts[4] || '0', 10) || 0;
     this.fullmove = parseInt(parts[5] || '1', 10) || 1;
-    // undo stacks
-    this.usCast = []; this.usEp = []; this.usHalf = [];
-    this.usLo = []; this.usHi = []; this.usMove = [];
+    // preallocated undo stacks
+    if (!this.stMove) {
+      const N = 2048;
+      this.stCast = new Int32Array(N); this.stEp = new Int32Array(N);
+      this.stHalf = new Int32Array(N); this.stLo = new Int32Array(N);
+      this.stHi = new Int32Array(N); this.stMove = new Int32Array(N);
+    }
+    this.sp = 0;
     this.computeHash();
     return this;
   }
+
+  growStacks() {
+    const N = this.stMove.length * 2;
+    for (const k of ['stCast', 'stEp', 'stHalf', 'stLo', 'stHi', 'stMove']) {
+      const a = new Int32Array(N);
+      a.set(this[k]);
+      this[k] = a;
+    }
+  }
+
+  lastMove() { return this.sp > 0 ? this.stMove[this.sp - 1] : 0; }
 
   computeHash() {
     let lo = 0, hi = 0;
@@ -327,9 +343,11 @@ class Position {
     const piece = (m >> 14) & 7, capt = (m >> 17) & 7, promo = (m >> 20) & 7;
     const b = this.board;
 
-    this.usCast.push(this.castling); this.usEp.push(this.ep);
-    this.usHalf.push(this.halfmove); this.usLo.push(this.hashLo); this.usHi.push(this.hashHi);
-    this.usMove.push(m);
+    let sp = this.sp;
+    if (sp >= this.stMove.length) this.growStacks();
+    this.stCast[sp] = this.castling; this.stEp[sp] = this.ep; this.stHalf[sp] = this.halfmove;
+    this.stLo[sp] = this.hashLo; this.stHi[sp] = this.hashHi; this.stMove[sp] = m;
+    this.sp = sp + 1;
 
     let lo = this.hashLo, hi = this.hashHi;
     if (this.ep >= 0) { lo ^= Z_EP_LO[this.ep & 7]; hi ^= Z_EP_HI[this.ep & 7]; }
@@ -389,7 +407,8 @@ class Position {
   }
 
   unmake() {
-    const m = this.usMove.pop();
+    const sp = --this.sp;
+    const m = this.stMove[sp];
     const them = this.side, us = -them;
     const from = m & 127, to = (m >> 7) & 127;
     const piece = (m >> 14) & 7, capt = (m >> 17) & 7;
@@ -411,19 +430,21 @@ class Position {
       }
     }
 
-    this.castling = this.usCast.pop();
-    this.ep = this.usEp.pop();
-    this.halfmove = this.usHalf.pop();
-    this.hashLo = this.usLo.pop();
-    this.hashHi = this.usHi.pop();
+    this.castling = this.stCast[sp];
+    this.ep = this.stEp[sp];
+    this.halfmove = this.stHalf[sp];
+    this.hashLo = this.stLo[sp];
+    this.hashHi = this.stHi[sp];
     if (us === BLACK) this.fullmove--;
     this.side = us;
   }
 
   makeNull() {
-    this.usCast.push(this.castling); this.usEp.push(this.ep);
-    this.usHalf.push(this.halfmove); this.usLo.push(this.hashLo); this.usHi.push(this.hashHi);
-    this.usMove.push(0);
+    let sp = this.sp;
+    if (sp >= this.stMove.length) this.growStacks();
+    this.stCast[sp] = this.castling; this.stEp[sp] = this.ep; this.stHalf[sp] = this.halfmove;
+    this.stLo[sp] = this.hashLo; this.stHi[sp] = this.hashHi; this.stMove[sp] = 0;
+    this.sp = sp + 1;
     let lo = this.hashLo, hi = this.hashHi;
     if (this.ep >= 0) { lo ^= Z_EP_LO[this.ep & 7]; hi ^= Z_EP_HI[this.ep & 7]; }
     this.ep = -1;
@@ -434,22 +455,22 @@ class Position {
   }
 
   unmakeNull() {
-    this.usMove.pop();
-    this.castling = this.usCast.pop();
-    this.ep = this.usEp.pop();
-    this.halfmove = this.usHalf.pop();
-    this.hashLo = this.usLo.pop();
-    this.hashHi = this.usHi.pop();
+    const sp = --this.sp;
+    this.castling = this.stCast[sp];
+    this.ep = this.stEp[sp];
+    this.halfmove = this.stHalf[sp];
+    this.hashLo = this.stLo[sp];
+    this.hashHi = this.stHi[sp];
     this.side = -this.side;
   }
 
   // number of previous occurrences of the current position (same side to move)
   repetitionCount() {
     let count = 0;
-    const n = this.usLo.length;
+    const n = this.sp;
     const limit = Math.min(this.halfmove, n);
     for (let i = 2; i <= limit; i += 2) {
-      if (this.usLo[n - i] === this.hashLo && this.usHi[n - i] === this.hashHi) count++;
+      if (this.stLo[n - i] === this.hashLo && this.stHi[n - i] === this.hashHi) count++;
     }
     return count;
   }
