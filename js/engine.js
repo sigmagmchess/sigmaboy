@@ -13,7 +13,13 @@
 'use strict';
 
 if (typeof importScripts === 'function' && !global.SC) importScripts('chess.js');
+if (typeof importScripts === 'function' && !global.SigmaNNUE) {
+  try { importScripts('nnue.js'); } catch (e) { /* net yoksa klasik değerlendirme kullanılır */ }
+}
 const SC = global.SC || (typeof require !== 'undefined' ? require('./chess.js') : null);
+if (!global.SigmaNNUE && typeof require !== 'undefined') {
+  try { require('./nnue.js'); } catch (e) { /* optional */ }
+}
 
 const { PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, WHITE, BLACK } = SC;
 const { mFrom, mTo, mPiece, mCapt, mPromo, mIsCapture } = SC;
@@ -185,7 +191,7 @@ function evaluate(pos) {
       eg += sgn * MOB_EG[t] * mob;
     }
 
-    // rook on (semi-)open file / on the 7th rank
+    // rook on (semi-)open file
     if (t === ROOK) {
       const f = (sq & 7) + 1;
       const own = white ? EV_wFile[f] : EV_bFile[f];
@@ -193,18 +199,6 @@ function evaluate(pos) {
       if (own === 0) {
         if (opp === 0) { mg += sgn * ROOK_OPEN_MG; eg += sgn * ROOK_OPEN_EG; }
         else { mg += sgn * ROOK_SEMI_MG; eg += sgn * ROOK_SEMI_EG; }
-      }
-      if (white ? (sq >> 4) === 1 : (sq >> 4) === 6) { mg += sgn * 16; eg += sgn * 24; }
-    }
-
-    // knight outpost: pawn-protected, on enemy-facing ranks, safe from pawn kicks
-    if (t === KNIGHT) {
-      const r = sq >> 4;
-      if (white ? (r >= 2 && r <= 4) : (r >= 3 && r <= 5)) {
-        const defended = white
-          ? (b[sq + 15] === PAWN || b[sq + 17] === PAWN)
-          : (b[sq - 15] === -PAWN || b[sq - 17] === -PAWN);
-        if (defended && !pawnCanKick(b, sq, white)) { mg += sgn * 22; eg += sgn * 12; }
       }
     }
   }
@@ -266,17 +260,6 @@ function hasEnemyPawnAhead(b, sq, white) {
   return false;
 }
 
-// can an enemy pawn ever advance to attack this square?
-function pawnCanKick(b, sq, white) {
-  const dir = white ? -16 : 16;
-  const enemy = white ? -PAWN : PAWN;
-  for (let t = sq + dir; !(t & 0x88); t += dir) {
-    if (!((t - 1) & 0x88) && b[t - 1] === enemy) return true;
-    if (!((t + 1) & 0x88) && b[t + 1] === enemy) return true;
-  }
-  return false;
-}
-
 function kingShield(b, ksq, white) {
   const r = ksq >> 4;
   // only meaningful when the king is on its own back two ranks
@@ -292,6 +275,52 @@ function kingShield(b, ksq, white) {
     else score -= 10;
   }
   return score;
+}
+
+// ================================================================ NNUE
+// 768 → H (clipped ReLU) → 1, side-to-move perspective, int16 quantized.
+// distilled from Stockfish 18 Lite static evaluation.
+let NN = null, NN_ACC = null;
+function initNNUE(raw) {
+  const dec = s => {
+    if (typeof Buffer !== 'undefined') {
+      const b = Buffer.from(s, 'base64');
+      return new Int16Array(b.buffer, b.byteOffset, b.length >> 1);
+    }
+    const bin = atob(s);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return new Int16Array(u.buffer);
+  };
+  NN = { H: raw.H, W1: dec(raw.W1), B1: dec(raw.B1), W2: dec(raw.W2), B2: raw.B2 };
+  NN_ACC = new Int32Array(raw.H);
+}
+if (global.SigmaNNUE) { try { initNNUE(global.SigmaNNUE); } catch (e) { NN = null; } }
+
+// returns cp from side-to-move perspective
+function nnueEval(pos) {
+  const H = NN.H, W1 = NN.W1, W2 = NN.W2, acc = NN_ACC;
+  const b = pos.board;
+  const white = pos.side === WHITE;
+  for (let h = 0; h < H; h++) acc[h] = NN.B1[h];
+  for (let sq = 0; sq < 120; sq++) {
+    if (sq & 0x88) { sq += 7; continue; }
+    const p = b[sq];
+    if (!p) continue;
+    const t = (p > 0 ? p : -p) - 1;                 // 0..5
+    const own = (p > 0) === white;
+    let sq64 = ((sq >> 4) << 3) | (sq & 7);         // a8=0 … h1=63
+    if (!white) sq64 ^= 56;                         // perspective flip
+    const base = (((own ? t : t + 6) << 6) | sq64) * H;
+    for (let h = 0; h < H; h++) acc[h] += W1[base + h];
+  }
+  let out = NN.B2 * 1024;                           // align scales (see train.js)
+  for (let h = 0; h < H; h++) {
+    let v = acc[h];
+    if (v < 0) v = 0; else if (v > 1024) v = 1024;  // clipped ReLU (scale 1024)
+    out += W2[h] * v;
+  }
+  return ((out * 400) / 524288) | 0;
 }
 
 // ================================================================ search
@@ -332,21 +361,25 @@ class Engine {
     this.killer2 = new Int32Array(MAX_PLY);
     this.history = new Int32Array(2 * 7 * 128);
     this.counter = new Int32Array(2 * 7 * 128); // countermove heuristic
-    this.contHist = new Int32Array(7 * 128 * 7 * 128); // continuation history [prevPc][prevTo][pc][to]
     this.evalStack = new Int32Array(MAX_PLY);
     this.pvTable = [];
     this.pvLen = new Int32Array(MAX_PLY);
     this.scoreBufs = [];
-    this.quietBufs = [];
     for (let i = 0; i < MAX_PLY; i++) {
       this.pvTable.push(new Int32Array(MAX_PLY));
       this.scoreBufs.push(new Int32Array(256));
-      this.quietBufs.push(new Int32Array(64));
     }
+    this.evalMode = 'nnue'; // 'nnue' | 'hce' | 'blend' — nnue falls back to hce if no net
     this.nodes = 0;
     this.stopFlag = false;
     this.deadline = Infinity;
     this.rndState = 0x1234567 ^ (Date.now() & 0xffff);
+  }
+
+  eval_(pos) {
+    if (NN && this.evalMode === 'nnue') return nnueEval(pos);
+    if (NN && this.evalMode === 'blend') return (nnueEval(pos) + evaluate(pos)) >> 1;
+    return evaluate(pos);
   }
 
   rnd() { // xorshift for level-based randomness
@@ -359,7 +392,7 @@ class Engine {
   clearTables() {
     this.ttKey.fill(0); this.ttMove.fill(0); this.ttScore.fill(0);
     this.ttDepth.fill(0); this.ttFlag.fill(0); this.ttAge.fill(0);
-    this.history.fill(0); this.counter.fill(0); this.contHist.fill(0);
+    this.history.fill(0); this.counter.fill(0);
     this.killer1.fill(0); this.killer2.fill(0);
   }
 
@@ -381,17 +414,6 @@ class Engine {
   // countermove slot for the move that led to the current position
   cmIdx(prevMove, sideToMove) {
     return (sideToMove === WHITE ? 0 : 7 * 128) + mPiece(prevMove) * 128 + (mTo(prevMove) & 127);
-  }
-
-  // continuation-history slot: (previous move, current move)
-  chIdx(prevMove, piece, to) {
-    return ((mPiece(prevMove) * 128 + (mTo(prevMove) & 127)) * 7 + piece) * 128 + (to & 127);
-  }
-
-  updHist(arr, i, delta) {
-    let v = arr[i] + delta;
-    if (v > 400000) v = 400000; else if (v < -400000) v = -400000;
-    arr[i] = v;
   }
 
   // smallest attacker of `to` for `side`, honoring pieces removed during SEE
@@ -465,23 +487,13 @@ class Engine {
       const m = moves[i];
       if (m === ttMove) { scores[i] = 2000000000; continue; }
       const capt = mCapt(m), promo = mPromo(m);
-      if (capt) {
-        // losing captures (SEE) go to the very bottom
-        if (!promo && SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < 0)
-          scores[i] = -1000000000 + capt * 100 - mPiece(m);
-        else
-          scores[i] = 1000000000 + capt * 100 - mPiece(m) + (promo === QUEEN ? 500 : 0);
-      }
+      if (capt) scores[i] = 1000000000 + capt * 100 - mPiece(m) + (promo === QUEEN ? 500 : 0);
       else if (promo === QUEEN) scores[i] = 999000000;
       else if (promo) scores[i] = 500000;
       else if (m === this.killer1[ply]) scores[i] = 900000000;
       else if (m === cm) scores[i] = 850000000;
       else if (m === this.killer2[ply]) scores[i] = 800000000;
-      else {
-        let s = this.history[this.histIdx(pos.side, mPiece(m), mTo(m))];
-        if (prevM) s += this.contHist[this.chIdx(prevM, mPiece(m), mTo(m))];
-        scores[i] = s;
-      }
+      else scores[i] = this.history[this.histIdx(pos.side, mPiece(m), mTo(m))];
     }
     return scores;
   }
@@ -500,42 +512,29 @@ class Engine {
     this.nodes++;
     this.checkTime();
     const pos = this.pos;
-    if (ply >= MAX_PLY - 1) return evaluate(pos);
+    if (ply >= MAX_PLY - 1) return this.eval_(pos);
 
-    // transposition table probe (any depth is sufficient for qsearch)
-    const idx = (pos.hashLo & TT_MASK) >>> 0;
-    let ttMove = 0;
-    if (this.ttKey[idx] === pos.hashHi && this.ttFlag[idx] !== 0) {
-      ttMove = this.ttMove[idx];
-      let s = this.ttScore[idx];
-      if (s > MATE_BOUND) s -= ply; else if (s < -MATE_BOUND) s += ply;
-      const f = this.ttFlag[idx];
-      if (f === TT_EXACT) return s;
-      if (f === TT_LOWER && s >= beta) return s;
-      if (f === TT_UPPER && s <= alpha) return s;
-    }
-
-    const origAlpha = alpha;
     const inCheck = pos.inCheck();
-    let best, bestMove = 0;
+    let best;
     if (inCheck) {
       best = -MATE + ply; // will be overwritten unless mated
     } else {
-      best = evaluate(pos);
+      best = this.eval_(pos);
       if (best >= beta) return best;
       if (best > alpha) alpha = best;
     }
 
     const moves = pos.genMoves(!inCheck);
-    const scores = this.scoreMoves(moves, ttMove, ply);
+    const scores = this.scoreMoves(moves, 0, ply);
     let legal = 0;
     for (let i = 0; i < moves.length; i++) {
       const m = this.pickMove(moves, scores, i);
       if (!inCheck && !mPromo(m)) {
-        // losing captures were tagged during scoring (SEE < 0)
-        if (scores[i] < -900000000) continue;
+        const capt = mCapt(m);
         // delta pruning
-        if (best + SEE_VAL[mCapt(m)] + 200 <= alpha) continue;
+        if (best + SEE_VAL[capt] + 200 <= alpha) continue;
+        // skip losing captures (SEE)
+        if (SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < 0) continue;
       }
       pos.make(m);
       if (pos.illegalAfterMove()) { pos.unmake(); continue; }
@@ -544,7 +543,6 @@ class Engine {
       pos.unmake();
       if (score > best) {
         best = score;
-        bestMove = m;
         if (score > alpha) {
           alpha = score;
           if (alpha >= beta) break;
@@ -552,18 +550,6 @@ class Engine {
       }
     }
     if (inCheck && legal === 0) return -MATE + ply;
-
-    // store (never displace deeper same-generation entries)
-    if (this.ttFlag[idx] === 0 || this.ttAge[idx] !== this.age || this.ttDepth[idx] <= 0) {
-      let stScore = best;
-      if (stScore > MATE_BOUND) stScore += ply; else if (stScore < -MATE_BOUND) stScore -= ply;
-      this.ttKey[idx] = pos.hashHi;
-      this.ttMove[idx] = bestMove;
-      this.ttScore[idx] = stScore;
-      this.ttDepth[idx] = 0;
-      this.ttFlag[idx] = best >= beta ? TT_LOWER : best > origAlpha ? TT_EXACT : TT_UPPER;
-      this.ttAge[idx] = this.age;
-    }
     return best;
   }
 
@@ -585,7 +571,7 @@ class Engine {
 
     this.nodes++;
     this.checkTime();
-    if (ply >= MAX_PLY - 1) return evaluate(pos);
+    if (ply >= MAX_PLY - 1) return this.eval_(pos);
 
     const isPv = beta - alpha > 1;
 
@@ -604,7 +590,7 @@ class Engine {
       }
     }
 
-    const staticEval = inCheck ? -INF : evaluate(pos);
+    const staticEval = inCheck ? -INF : this.eval_(pos);
     this.evalStack[ply] = staticEval;
     const improving = !inCheck && ply >= 2 && staticEval > this.evalStack[ply - 2];
 
@@ -647,8 +633,6 @@ class Engine {
     const prevM = pos.lastMove();
 
     let legal = 0, bestScore = -INF, bestMove = 0, ttStoreFlag = TT_UPPER;
-    const quietsTried = this.quietBufs[ply];
-    let nQuiets = 0;
     for (let i = 0; i < moves.length; i++) {
       const m = this.pickMove(moves, scores, i);
       const capt = mCapt(m), promo = mPromo(m);
@@ -657,7 +641,7 @@ class Engine {
       if (!isPv && !inCheck && bestScore > -MATE_BOUND && legal > 0) {
         // late move (move-count) pruning of quiets at shallow depth
         if (quiet && depth <= 5 && legal >= lmpMax) continue;
-        // prune clearly losing captures at shallow depth (SEE, lenient threshold)
+        // prune clearly losing captures at shallow depth (SEE)
         if (capt && !promo && depth <= 4 &&
             SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < -80 * depth) continue;
       }
@@ -668,14 +652,13 @@ class Engine {
       const givesCheck = pos.inCheck();
 
       if (futile && quiet && legal > 1 && !givesCheck) { pos.unmake(); continue; }
-      if (quiet && nQuiets < 64) quietsTried[nQuiets++] = m;
 
       let score;
       try {
         if (legal === 1) {
           score = -this.search(depth - 1, -beta, -alpha, ply + 1, true);
         } else {
-          // late move reductions (log table, history-adjusted)
+          // late move reductions (log table)
           let R = 0;
           if (quiet && depth >= 3 && !inCheck && !givesCheck && legal > 2) {
             R = LMR_TABLE[depth > 63 ? 63 : depth][legal > 63 ? 63 : legal];
@@ -712,17 +695,9 @@ class Engine {
             if (quiet) {
               if (this.killer1[ply] !== m) { this.killer2[ply] = this.killer1[ply]; this.killer1[ply] = m; }
               if (prevM) this.counter[this.cmIdx(prevM, pos.side)] = m;
-              const bonus = depth * depth + depth;
-              const malus = -(bonus >> 1);
-              this.updHist(this.history, this.histIdx(pos.side, mPiece(m), mTo(m)), bonus);
-              if (prevM) this.updHist(this.contHist, this.chIdx(prevM, mPiece(m), mTo(m)), bonus);
-              // malus: earlier quiets that failed to cut
-              for (let q = 0; q < nQuiets; q++) {
-                const qm = quietsTried[q];
-                if (qm === m) continue;
-                this.updHist(this.history, this.histIdx(pos.side, mPiece(qm), mTo(qm)), malus);
-                if (prevM) this.updHist(this.contHist, this.chIdx(prevM, mPiece(qm), mTo(qm)), malus);
-              }
+              const hi = this.histIdx(pos.side, mPiece(m), mTo(m));
+              this.history[hi] += depth * depth;
+              if (this.history[hi] > 400000) for (let k = 0; k < this.history.length; k++) this.history[k] >>= 1;
             }
             break;
           }
@@ -1034,7 +1009,7 @@ function buildBook() {
 }
 buildBook();
 
-const EngineAPI = { Engine, evaluate, AbortSearch, getBook: () => BOOK };
+const EngineAPI = { Engine, evaluate, nnueEval: p2 => NN ? nnueEval(p2) : null, hasNNUE: () => !!NN, AbortSearch, getBook: () => BOOK };
 if (typeof module !== 'undefined' && module.exports) module.exports = EngineAPI;
 global.SigmaEngine = EngineAPI;
 

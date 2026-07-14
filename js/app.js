@@ -151,14 +151,17 @@ const LEVEL_DESC = ['', 'Yeni başlayan (~600)', 'Acemi (~900)', 'Gelişen (~120
 const LEVEL_TIME = { 5: 400, 6: 1000, 7: 2500, 8: 6000, 9: 12000 };
 
 const CLASS_INFO = {
-  brilliant:  { label: '!!', name: 'Parlak',       color: '#26c2a3' },
-  best:       { label: '★',  name: 'En İyi',       color: '#81b64c' },
-  excellent:  { label: '!',  name: 'Mükemmel',     color: '#96bc4b' },
-  good:       { label: '✓',  name: 'İyi',          color: '#95b776' },
-  book:       { label: '📖', name: 'Kitap',        color: '#a88865' },
-  inaccuracy: { label: '?!', name: 'Tutarsızlık',  color: '#f0c15c' },
-  mistake:    { label: '?',  name: 'Hata',         color: '#e6912c' },
-  blunder:    { label: '??', name: 'Vahim Hata',   color: '#ca3431' },
+  brilliant:  { label: '!!', name: 'Parlak',        color: '#26c2a3' },
+  great:      { label: '!',  name: 'Harika',        color: '#4a90d9' },
+  best:       { label: '★',  name: 'En İyi',        color: '#81b64c' },
+  excellent:  { label: '✓✓', name: 'Mükemmel',      color: '#96bc4b' },
+  good:       { label: '✓',  name: 'İyi',           color: '#95b776' },
+  book:       { label: '📖', name: 'Kitap',         color: '#a88865' },
+  forced:     { label: '⇉',  name: 'Zorunlu',       color: '#8d8d8d' },
+  inaccuracy: { label: '?!', name: 'Tutarsızlık',   color: '#f0c15c' },
+  miss:       { label: '✗',  name: 'Kaçan Fırsat',  color: '#d9634f' },
+  mistake:    { label: '?',  name: 'Hata',          color: '#e6912c' },
+  blunder:    { label: '??', name: 'Vahim Hata',    color: '#ca3431' },
 };
 
 // ================================================================ view helpers
@@ -791,7 +794,7 @@ function startGame(startFen) {
 
   $('newgame-card').classList.add('hidden');
   $('game-card').classList.remove('hidden');
-  $('game-result').classList.add('hidden');
+  hideResultOverlay();
   if (engine.worker) engine.worker.postMessage({ cmd: 'newgame' });
 
   renderAll();
@@ -837,6 +840,28 @@ function checkGameEnd() {
   return null;
 }
 
+// game-result overlay: shown on game end, dismissed by a single click anywhere
+let resultDismisser = null;
+function showResultOverlay() {
+  $('game-result').classList.remove('hidden');
+  // arm the dismisser a beat later so the move that ended the game doesn't close it
+  setTimeout(() => {
+    if (resultDismisser || $('game-result').classList.contains('hidden')) return;
+    resultDismisser = e => {
+      if (e.target.closest && e.target.closest('#game-result button')) return; // let its buttons work
+      hideResultOverlay();
+    };
+    document.addEventListener('pointerdown', resultDismisser, true);
+  }, 400);
+}
+function hideResultOverlay() {
+  $('game-result').classList.add('hidden');
+  if (resultDismisser) {
+    document.removeEventListener('pointerdown', resultDismisser, true);
+    resultDismisser = null;
+  }
+}
+
 function endGame(status) {
   if (S.play.over) return;
   S.play.over = status;
@@ -869,18 +894,20 @@ function endGame(status) {
   }
   S.game.result = result;
   $('game-result-text').textContent = text;
-  $('game-result').classList.remove('hidden');
+  showResultOverlay();
   renderClocks();
 }
 
 $('btn-start').addEventListener('click', () => startGame());
-$('btn-rematch').addEventListener('click', () => {
-  $('game-result').classList.add('hidden');
+function backToNewGame() {
+  hideResultOverlay();
   $('newgame-card').classList.remove('hidden');
   $('game-card').classList.add('hidden');
   S.play.active = false;
   stopClock();
-});
+}
+$('btn-rematch').addEventListener('click', backToNewGame);
+$('btn-newgame').addEventListener('click', backToNewGame);
 $('btn-resign').addEventListener('click', () => {
   if (S.play.active && !S.play.over) endGame('resign');
 });
@@ -895,7 +922,7 @@ $('btn-undo').addEventListener('click', () => {
   remove = Math.min(remove, n);
   S.game.moves.length = n - remove;
   S.play.over = null;
-  $('game-result').classList.add('hidden');
+  hideResultOverlay();
   S.view = S.game.moves.length - 1;
   S.line = S.game;
   _vpCacheFen = null;
@@ -1068,26 +1095,31 @@ async function runFullAnalysis() {
   const fens = [S.game.startFen];
   for (const mv of S.game.moves) fens.push(mv.fenAfter);
 
-  const evals = [], mates = [], bests = [];
+  const evals = [], mates = [], bests = [], seconds = [], legals = [];
   for (let i = 0; i <= n; i++) {
     fill.style.width = (i / (n + 1) * 100) + '%';
     ptext.textContent = `Konum ${i + 1} / ${n + 1} inceleniyor…`;
     const pos = new Position(fens[i]);
-    if (pos.legalMoves().length === 0) {
+    const nLegal = pos.legalMoves().length;
+    legals.push(nLegal);
+    if (nLegal === 0) {
       const mateNow = pos.inCheck();
       const stmW = pos.side === SC.WHITE;
       evals.push(mateNow ? (stmW ? -12000 : 12000) : 0);
       mates.push(mateNow ? (stmW ? -0.5 : 0.5) : null); // display as M0-ish
-      bests.push(null);
+      bests.push(null); seconds.push(null);
       continue;
     }
-    const res = await engine.request({ fen: fens[i], movetime: perMove, depth: 30, multipv: 1 });
-    if (!res) { i--; continue; } // superseded (shouldn't happen) → retry
+    // two lines: the second-best move feeds "great/brilliant" detection
+    const res = await engine.request({ fen: fens[i], movetime: perMove, depth: 30, multipv: 2 });
+    if (!res) { legals.pop(); i--; continue; } // superseded (shouldn't happen) → retry
     const stm = fens[i].split(' ')[1];
     let cpW = stm === 'w' ? res.score : -res.score;
     let mateW = res.mate != null ? (stm === 'w' ? res.mate : -res.mate) : null;
     if (mateW != null) cpW = mateW > 0 ? 12000 : -12000;
     evals.push(cpW); mates.push(mateW); bests.push(res.bestmove);
+    const l2 = res.lines && res.lines[1];
+    seconds.push(l2 ? { score: l2.score, mate: l2.mate } : null); // mover perspective
   }
 
   // classify
@@ -1098,20 +1130,30 @@ async function runFullAnalysis() {
     const moverWhite = fens[i].split(' ')[1] === 'w';
     const before = winPct(evals[i], mates[i]);
     const after = winPct(evals[i + 1], mates[i + 1]);
-    const wBefore = moverWhite ? before : 100 - before;
-    const wAfter = moverWhite ? after : 100 - after;
+    const wBefore = moverWhite ? before : 100 - before;   // mover's win% with best play
+    const wAfter = moverWhite ? after : 100 - after;      // mover's win% after the played move
     const drop = Math.max(0, wBefore - wAfter);
     const played = S.game.moves[i].uci;
     const isBook = engine.bookKeys.has(fenKeyOf(fens[i]));
+    // gap between best and second-best move (mover win%) — "how critical was this choice"
+    const sec = seconds[i];
+    const gap = sec ? wBefore - winPct(sec.score, sec.mate) : null;
     let cls;
-    if (isBook && i < 24) cls = 'book';
+    if (legals[i] === 1) cls = 'forced';
+    else if (isBook && i < 24) cls = 'book';
     else if (played === bests[i] || drop <= 0.4) {
       cls = played === bests[i] ? 'best' : 'excellent';
-      // brilliant: best move that sacrifices material while staying OK
-      if (cls === 'best' && wBefore < 97 && isSacrifice(fens, i) && wAfter > 40) cls = 'brilliant';
+      if (cls === 'best') {
+        // brilliant: a real sacrifice that keeps the position healthy,
+        // in a game that wasn't already decided
+        if (isSacrifice(fens, i) && wBefore < 92 && wAfter > 40) cls = 'brilliant';
+        // great: the only good move — every alternative loses serious ground
+        else if (gap != null && gap >= 18 && wAfter >= 40) cls = 'great';
+      }
     }
     else if (drop <= 2) cls = 'excellent';
     else if (drop <= 5) cls = 'good';
+    else if (wBefore >= 72 && drop >= 10 && wAfter >= 40) cls = 'miss'; // missed a big chance but still fine
     else if (drop <= 10) cls = 'inaccuracy';
     else if (drop <= 20) cls = 'mistake';
     else cls = 'blunder';
@@ -1143,13 +1185,15 @@ function fenKeyOf(fen) {
   return f[0] + ' ' + f[1] + ' ' + f[2] + ' ' + f[3];
 }
 
-// crude material-based sacrifice detection for "brilliant"
+// material-based sacrifice detection for "brilliant":
+// mover's material balance dips by a minor piece or more within two plies
 function isSacrifice(fens, i) {
-  if (i + 2 >= fens.length) return false;
+  if (i + 1 >= fens.length) return false;
   const moverWhite = fens[i].split(' ')[1] === 'w';
   const m0 = materialOf(fens[i], moverWhite);
-  const m2 = materialOf(fens[i + 2], moverWhite);
-  return m2 - m0 <= -2.5;
+  let worst = materialOf(fens[i + 1], moverWhite);
+  if (i + 2 < fens.length) worst = Math.min(worst, materialOf(fens[i + 2], moverWhite));
+  return worst - m0 <= -2.5;
 }
 function materialOf(fen, forWhite) {
   const c = countPieces(fen);
@@ -1167,7 +1211,7 @@ function renderReport() {
   $('report').classList.remove('hidden');
   $('acc-white').textContent = rep.accW.toFixed(1) + '%';
   $('acc-black').textContent = rep.accB.toFixed(1) + '%';
-  const order = ['brilliant', 'best', 'excellent', 'good', 'book', 'inaccuracy', 'mistake', 'blunder'];
+  const order = ['brilliant', 'great', 'best', 'excellent', 'good', 'book', 'forced', 'inaccuracy', 'miss', 'mistake', 'blunder'];
   let html = '';
   for (const k of order) {
     if (!rep.counts[k]) continue;
@@ -1215,7 +1259,7 @@ function drawGraph() {
   // mistakes/blunders dots
   for (let i = 0; i < rep.classes.length; i++) {
     const c = rep.classes[i];
-    if (c !== 'mistake' && c !== 'blunder' && c !== 'inaccuracy' && c !== 'brilliant') continue;
+    if (c !== 'mistake' && c !== 'blunder' && c !== 'inaccuracy' && c !== 'brilliant' && c !== 'great' && c !== 'miss') continue;
     ctx.beginPath();
     ctx.arc(xOf(i + 1), yOf(rep.evals[i + 1]), 3.5 * (window.devicePixelRatio || 1), 0, Math.PI * 2);
     ctx.fillStyle = CLASS_INFO[c].color;
