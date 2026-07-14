@@ -39,13 +39,25 @@ class EngineCtl {
   }
   init() {
     try {
-      this.worker = new Worker('js/engine.js');
+      // single-file bundle embeds the worker source; repo layout loads it by path
+      if (window.SIGMA_ENGINE_SRC) {
+        const blob = new Blob([window.SIGMA_ENGINE_SRC], { type: 'text/javascript' });
+        this.worker = new Worker(URL.createObjectURL(blob));
+      } else {
+        this.worker = new Worker('js/engine.js');
+      }
       this.worker.onmessage = e => this.handle(e.data);
       this.worker.onerror = () => { this.worker = null; this.fallback(); };
-    } catch (e) { this.fallback(); }
+    } catch (e) { this.worker = null; this.fallback(); }
   }
   fallback() {
     if (this.local || this.loadingLocal) return;
+    if (window.SigmaEngine) { // engine already on the page (bundle) → run on main thread
+      this.local = new window.SigmaEngine.Engine();
+      this.bookKeys = new Set(Object.keys(window.SigmaEngine.getBook()));
+      this.pump();
+      return;
+    }
     this.loadingLocal = true;
     const s = document.createElement('script');
     s.src = 'js/engine.js';

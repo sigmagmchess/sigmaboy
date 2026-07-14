@@ -4,12 +4,20 @@ Tamamen tarayıcıda çalışan, bağımlılıksız (sıfır kütüphane) güçl
 
 ## Çalıştırma
 
+**En kolay yol — tek dosya:** `dist/sigmaboy.html` dosyasını indirip çift tıklayın. Her şey (motor dahil) içine gömülüdür, sunucu gerekmez.
+
+**Depodan geliştirme sunucusuyla:**
+
 ```bash
+git clone <repo> && cd sigmaboy
+git checkout claude/chess-bot-app-nhz0i0   # kod bu daldadır
 python3 -m http.server 8000
 # tarayıcıda http://localhost:8000 adresini açın
 ```
 
-(Web Worker kullanıldığı için `file://` yerine küçük bir HTTP sunucusu önerilir; worker açılamazsa uygulama otomatik olarak ana iş parçacığına düşer.)
+Not: `index.html` doğrudan `file://` ile açılırsa Web Worker güvenlik kısıtına takılır; uygulama bunu algılar ve motoru otomatik olarak ana iş parçacığında çalıştırır (arayüz yine tam çalışır, motor düşünürken kısa takılmalar olabilir). Tek dosyalık `dist/sigmaboy.html` bu kısıta takılmaz: worker'ı gömülü kaynaktan (blob) oluşturur.
+
+Tek dosyayı yeniden üretmek için: `node build.js`
 
 ## Motor (js/engine.js)
 
