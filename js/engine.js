@@ -657,8 +657,9 @@ class Engine {
       if (!isPv && !inCheck && bestScore > -MATE_BOUND && legal > 0) {
         // late move (move-count) pruning of quiets at shallow depth
         if (quiet && depth <= 5 && legal >= lmpMax) continue;
-        // prune clearly losing captures at shallow depth (tagged by scoring SEE)
-        if (capt && !promo && depth <= 4 && scores[i] < -900000000) continue;
+        // prune clearly losing captures at shallow depth (SEE, lenient threshold)
+        if (capt && !promo && depth <= 4 &&
+            SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < -80 * depth) continue;
       }
 
       pos.make(m);
@@ -681,9 +682,6 @@ class Engine {
             if (isPv) R--;
             if (!improving) R++;
             if (m === this.killer1[ply] || m === this.killer2[ply]) R--;
-            let hs = this.history[this.histIdx(-pos.side, mPiece(m), mTo(m))];
-            if (prevM) hs += this.contHist[this.chIdx(prevM, mPiece(m), mTo(m))];
-            if (hs > 60000) R--; else if (hs < -60000) R++;
             if (R < 0) R = 0;
             const maxR = depth - 2;
             if (R > maxR) R = maxR > 0 ? maxR : 0;
@@ -715,14 +713,15 @@ class Engine {
               if (this.killer1[ply] !== m) { this.killer2[ply] = this.killer1[ply]; this.killer1[ply] = m; }
               if (prevM) this.counter[this.cmIdx(prevM, pos.side)] = m;
               const bonus = depth * depth + depth;
+              const malus = -(bonus >> 1);
               this.updHist(this.history, this.histIdx(pos.side, mPiece(m), mTo(m)), bonus);
               if (prevM) this.updHist(this.contHist, this.chIdx(prevM, mPiece(m), mTo(m)), bonus);
               // malus: earlier quiets that failed to cut
               for (let q = 0; q < nQuiets; q++) {
                 const qm = quietsTried[q];
                 if (qm === m) continue;
-                this.updHist(this.history, this.histIdx(pos.side, mPiece(qm), mTo(qm)), -bonus);
-                if (prevM) this.updHist(this.contHist, this.chIdx(prevM, mPiece(qm), mTo(qm)), -bonus);
+                this.updHist(this.history, this.histIdx(pos.side, mPiece(qm), mTo(qm)), malus);
+                if (prevM) this.updHist(this.contHist, this.chIdx(prevM, mPiece(qm), mTo(qm)), malus);
               }
             }
             break;
