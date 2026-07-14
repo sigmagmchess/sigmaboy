@@ -381,7 +381,9 @@ class Engine {
       this.pvTable.push(new Int32Array(MAX_PLY));
       this.scoreBufs.push(new Int32Array(256));
     }
-    this.evalMode = 'nnue'; // 'nnue' | 'hce' | 'blend' — nnue falls back to hce if no net
+    // 'nnue' | 'hce' | 'blend' — hce is the measured-strongest default;
+    // nnue mode is available and used when it wins the eval playoff
+    this.evalMode = 'hce';
     // incremental NNUE accumulators: one pair (white/black perspective) per ply level
     if (NN) {
       this.accW = []; this.accB = [];
