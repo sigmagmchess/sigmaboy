@@ -19,9 +19,11 @@ const engine = read('js/engine.js');
 const pieces = read('js/pieces.js');
 const sound = read('js/sound.js');
 const app = read('js/app.js');
+let nnue = '';
+try { nnue = read('js/nnue.js'); } catch (e) { console.log('uyarı: js/nnue.js yok, NNUE olmadan paketleniyor'); }
 
-// worker source = chess rules + engine (ASCII only → safe to base64 via latin1)
-const workerSrc = chess + '\n' + engine;
+// worker source = chess rules + nnue weights + engine (ASCII only → safe to base64 via latin1)
+const workerSrc = chess + '\n' + nnue + '\n' + engine;
 const workerB64 = Buffer.from(workerSrc, 'latin1').toString('base64');
 
 let html = read('index.html');
@@ -35,6 +37,7 @@ const scripts = `
 <script>
 ${chess}
 </script>
+${nnue ? '<script>\n' + nnue + '\n</script>' : ''}
 <script>
 ${engine}
 </script>
