@@ -40,8 +40,34 @@ Değerlendirme (tapered mg/eg):
 
 Ekstra: ~50 ana varyanttan kurulan **açılış kitabı** (670 pozisyon), 9 güç seviyesi (zayıf seviyelerde insansı gürültülü seçim).
 
-Ölçüm (v2 motoru, v1'e karşı 20 oyunluk maç, hamle başına 150 ms):
-**+13 =4 -3 (%75) ≈ +190 Elo**. Başlangıç pozisyonunda 3 saniyede ulaşılan derinlik: 11 → **15**.
+### Güç ölçümleri
+
+Sürüm karşılaştırması (150 ms/hamle, kendi kendine maç):
+- v1 → v2: **+13 =4 -3 (%75) ≈ +190 Elo**
+- v2 → v2s (hızlı chess.js yığınları): aynı sürede ~%15 daha fazla düğüm, 3 sn'de derinlik 15→16
+
+**Elo kalibrasyonu** — Stockfish 18 Lite (WASM) sınırlı güç kipine (UCI_Elo) karşı,
+her basamak 12 oyun, SigmaBoy 150 ms/hamle:
+
+| Rakip | Sonuç | Skor | Performans |
+|---|---|---|---|
+| SF UCI_Elo 2000 | +9 =1 -2 | %79 | ≈ 2232 |
+| SF UCI_Elo 2200 | +10 =1 -1 | %88 | ≈ 2538 |
+| SF UCI_Elo 2400 | +8 =1 -3 | %71 | ≈ 2554 |
+
+Toplu tahmin: hızlı zaman kontrolünde (150 ms/hamle) **≈ 2400-2550 Elo**
+(SF UCI_Elo ölçeğinde; ±100 örneklem payı). Seviye 7-9 (2,5-12 sn/hamle)
+belirgin şekilde daha güçlü oynar.
+
+### NNUE (deneysel)
+
+Motor, Stockfish 18 Lite değerlendirmesinden damıtılmış 768→128 clipped-ReLU
+**NNUE** ağı içerir (`js/nnue.js`, int16 kuantalı, artımlı akümülatörlü —
+sıfırdan hesapla birebirliği 1230 düğümde doğrulandı; NNUE kipinde motor
+saniyede 422 bin düğüme çıkar). Kıyas maçlarında klasik el yapımı değerlendirme
+(HCE) hâlâ daha güçlü olduğundan **varsayılan kip HCE'dir**; ağ `engine.evalMode
+= 'nnue'` ile etkinleştirilebilir. Eğitim hattı (`gen-positions` → SF etiketleme
+→ SGD eğitimi) yeniden çalıştırılabilir durumda.
 
 ## Arayüz
 

@@ -146,8 +146,8 @@ const S = {
 };
 S.line = S.game;
 
-const LEVEL_DESC = ['', 'Yeni başlayan (~600)', 'Acemi (~900)', 'Gelişen (~1200)', 'Orta düzey (~1500)',
-  'Kulüp oyuncusu (~1800)', 'Güçlü oyuncu (~2000)', 'Uzman (~2200)', 'Usta (~2400)', 'Maksimum güç — derin düşünme'];
+const LEVEL_DESC = ['', 'Yeni başlayan (~600)', 'Acemi (~900)', 'Gelişen (~1200)', 'Orta düzey (~1600)',
+  'Uzman (~2300)', 'Usta adayı (~2400)', 'Usta (~2500)', 'Kıdemli usta (~2550)', 'Maksimum güç (2600+)'];
 const LEVEL_TIME = { 5: 400, 6: 1000, 7: 2500, 8: 6000, 9: 12000 };
 
 const CLASS_INFO = {
