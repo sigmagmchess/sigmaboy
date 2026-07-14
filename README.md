@@ -54,10 +54,12 @@ her basamak 12 oyun, SigmaBoy 150 ms/hamle:
 | SF UCI_Elo 2000 | +9 =1 -2 | %79 | ≈ 2232 |
 | SF UCI_Elo 2200 | +10 =1 -1 | %88 | ≈ 2538 |
 | SF UCI_Elo 2400 | +8 =1 -3 | %71 | ≈ 2554 |
+| SF UCI_Elo 2600 | +6 =1 -5 | %54 | ≈ 2629 |
 
-Toplu tahmin: hızlı zaman kontrolünde (150 ms/hamle) **≈ 2400-2550 Elo**
-(SF UCI_Elo ölçeğinde; ±100 örneklem payı). Seviye 7-9 (2,5-12 sn/hamle)
-belirgin şekilde daha güçlü oynar.
+Toplu tahmin: hızlı zaman kontrolünde (150 ms/hamle) **≈ 2500-2600 Elo**
+(48 oyun; SF UCI_Elo ölçeğinde, ±100 örneklem payı — kendi seviyesine
+yakın 2400/2600 basamakları en bilgilendirici olanlar). Seviye 7-9
+(2,5-12 sn/hamle) daha da güçlü oynar.
 
 ### NNUE (deneysel)
 
