@@ -297,6 +297,18 @@ function initNNUE(raw) {
 }
 if (global.SigmaNNUE) { try { initNNUE(global.SigmaNNUE); } catch (e) { NN = null; } }
 
+// feature indices for a signed piece on an 0x88 square, both perspectives
+function nnFeatW(p, sq) {
+  const t = (p > 0 ? p : -p) - 1;
+  const sq64 = ((sq >> 4) << 3) | (sq & 7);
+  return ((p > 0 ? t : t + 6) << 6) | sq64;
+}
+function nnFeatB(p, sq) {
+  const t = (p > 0 ? p : -p) - 1;
+  const sq64 = (((sq >> 4) << 3) | (sq & 7)) ^ 56;
+  return ((p < 0 ? t : t + 6) << 6) | sq64;
+}
+
 // returns cp from side-to-move perspective
 function nnueEval(pos) {
   const H = NN.H, W1 = NN.W1, W2 = NN.W2, acc = NN_ACC;
@@ -370,6 +382,12 @@ class Engine {
       this.scoreBufs.push(new Int32Array(256));
     }
     this.evalMode = 'nnue'; // 'nnue' | 'hce' | 'blend' — nnue falls back to hce if no net
+    // incremental NNUE accumulators: one pair (white/black perspective) per ply level
+    if (NN) {
+      this.accW = []; this.accB = [];
+      for (let i = 0; i < MAX_PLY + 8; i++) { this.accW.push(new Int32Array(NN.H)); this.accB.push(new Int32Array(NN.H)); }
+    }
+    this.accLevel = 0;
     this.nodes = 0;
     this.stopFlag = false;
     this.deadline = Infinity;
@@ -377,9 +395,90 @@ class Engine {
   }
 
   eval_(pos) {
-    if (NN && this.evalMode === 'nnue') return nnueEval(pos);
-    if (NN && this.evalMode === 'blend') return (nnueEval(pos) + evaluate(pos)) >> 1;
+    if (NN && this.evalMode === 'nnue') return this.nnueFast(pos);
+    if (NN && this.evalMode === 'blend') return (this.nnueFast(pos) + evaluate(pos)) >> 1;
     return evaluate(pos);
+  }
+
+  // rebuild accumulators for the root position (called once per go)
+  refreshAcc() {
+    if (!NN || this.evalMode === 'hce') return;
+    const H = NN.H, W1 = NN.W1;
+    const aw = this.accW[0], ab = this.accB[0];
+    for (let h = 0; h < H; h++) { aw[h] = NN.B1[h]; ab[h] = NN.B1[h]; }
+    const b = this.pos.board;
+    for (let sq = 0; sq < 120; sq++) {
+      if (sq & 0x88) { sq += 7; continue; }
+      const p = b[sq];
+      if (!p) continue;
+      const bw = nnFeatW(p, sq) * H, bb = nnFeatB(p, sq) * H;
+      for (let h = 0; h < H; h++) { aw[h] += W1[bw + h]; ab[h] += W1[bb + h]; }
+    }
+    this.accLevel = 0;
+  }
+
+  accApply(p, sq, sign) {
+    const H = NN.H, W1 = NN.W1;
+    const aw = this.accW[this.accLevel], ab = this.accB[this.accLevel];
+    const bw = nnFeatW(p, sq) * H, bb = nnFeatB(p, sq) * H;
+    if (sign > 0) for (let h = 0; h < H; h++) { aw[h] += W1[bw + h]; ab[h] += W1[bb + h]; }
+    else for (let h = 0; h < H; h++) { aw[h] -= W1[bw + h]; ab[h] -= W1[bb + h]; }
+  }
+
+  // make/unmake wrappers that keep the accumulators in sync
+  makeNN(m) {
+    const pos = this.pos;
+    const us = pos.side; // mover (before make)
+    pos.make(m);
+    if (!NN || this.evalMode === 'hce') return;
+    const lv = this.accLevel;
+    this.accW[lv + 1].set(this.accW[lv]);
+    this.accB[lv + 1].set(this.accB[lv]);
+    this.accLevel = lv + 1;
+    const from = m & 127, to = (m >> 7) & 127;
+    const piece = (m >> 14) & 7, capt = (m >> 17) & 7, promo = (m >> 20) & 7;
+    this.accApply(piece * us, from, -1);
+    if (m & SC.F_EP) this.accApply(-us, to + (us === WHITE ? 16 : -16), -1);
+    else if (capt) this.accApply(capt * -us, to, -1);
+    this.accApply((promo || piece) * us, to, 1);
+    if (m & SC.F_CASTLE) {
+      let rf, rt;
+      if ((to & 7) === 6) { rf = to + 1; rt = to - 1; } else { rf = to - 2; rt = to + 1; }
+      this.accApply(ROOK * us, rf, -1);
+      this.accApply(ROOK * us, rt, 1);
+    }
+  }
+
+  unmakeNN() {
+    this.pos.unmake();
+    if (NN && this.evalMode !== 'hce') this.accLevel--;
+  }
+
+  makeNullNN() {
+    this.pos.makeNull();
+    if (!NN || this.evalMode === 'hce') return;
+    const lv = this.accLevel;
+    this.accW[lv + 1].set(this.accW[lv]);
+    this.accB[lv + 1].set(this.accB[lv]);
+    this.accLevel = lv + 1;
+  }
+
+  unmakeNullNN() {
+    this.pos.unmakeNull();
+    if (NN && this.evalMode !== 'hce') this.accLevel--;
+  }
+
+  // output layer over the maintained accumulator (stm perspective)
+  nnueFast(pos) {
+    const H = NN.H, W2 = NN.W2;
+    const acc = pos.side === WHITE ? this.accW[this.accLevel] : this.accB[this.accLevel];
+    let out = NN.B2 * 1024;
+    for (let h = 0; h < H; h++) {
+      let v = acc[h];
+      if (v < 0) v = 0; else if (v > 1024) v = 1024;
+      out += W2[h] * v;
+    }
+    return ((out * 400) / 524288) | 0;
   }
 
   rnd() { // xorshift for level-based randomness
@@ -536,11 +635,11 @@ class Engine {
         // skip losing captures (SEE)
         if (SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < 0) continue;
       }
-      pos.make(m);
-      if (pos.illegalAfterMove()) { pos.unmake(); continue; }
+      this.makeNN(m);
+      if (pos.illegalAfterMove()) { this.unmakeNN(); continue; }
       legal++;
       const score = -this.qsearch(-beta, -alpha, ply + 1);
-      pos.unmake();
+      this.unmakeNN();
       if (score > best) {
         best = score;
         if (score > alpha) {
@@ -608,12 +707,12 @@ class Engine {
       // null-move pruning
       if (nullOk && depth >= 3 && staticEval >= beta && pos.hasNonPawnMaterial(pos.side)) {
         const R = 3 + (depth >> 3) + (staticEval - beta > 200 ? 1 : 0);
-        pos.makeNull();
+        this.makeNullNN();
         let score;
         try {
           score = -this.search(Math.max(0, depth - 1 - R), -beta, -beta + 1, ply + 1, false);
         } finally {
-          pos.unmakeNull();
+          this.unmakeNullNN();
         }
         if (score >= beta && score < MATE_BOUND) return beta;
       }
@@ -646,12 +745,12 @@ class Engine {
             SEE_VAL[capt] < SEE_VAL[mPiece(m)] && this.see(m) < -80 * depth) continue;
       }
 
-      pos.make(m);
-      if (pos.illegalAfterMove()) { pos.unmake(); continue; }
+      this.makeNN(m);
+      if (pos.illegalAfterMove()) { this.unmakeNN(); continue; }
       legal++;
       const givesCheck = pos.inCheck();
 
-      if (futile && quiet && legal > 1 && !givesCheck) { pos.unmake(); continue; }
+      if (futile && quiet && legal > 1 && !givesCheck) { this.unmakeNN(); continue; }
 
       let score;
       try {
@@ -676,7 +775,7 @@ class Engine {
             score = -this.search(depth - 1, -beta, -alpha, ply + 1, true);
         }
       } finally {
-        pos.unmake();
+        this.unmakeNN();
       }
 
       if (score > bestScore) {
@@ -746,7 +845,7 @@ class Engine {
 
         for (let i = 0; i < rootMoves.length; i++) {
           const m = this.pickMove(rootMoves, scores, i);
-          pos.make(m);
+          this.makeNN(m);
           let score;
           try {
             if (i === 0) score = -this.search(depth - 1, -beta, -a, 1, true);
@@ -755,11 +854,11 @@ class Engine {
               if (score > a && score < beta) score = -this.search(depth - 1, -beta, -a, 1, true);
             }
           } catch (e) {
-            pos.unmake();
+            this.unmakeNN();
             if (e instanceof AbortSearch) { aborted = true; break; }
             throw e;
           }
-          pos.unmake();
+          this.unmakeNN();
           if (score > a || i === 0) {
             a = Math.max(a, score);
             const pv = [m];
@@ -834,6 +933,8 @@ class Engine {
       }
     }
 
+    this.refreshAcc();
+
     // weak levels: shallow full-width root scoring + noisy pick
     if (o.level && o.level <= 4) return this.goWeak(o);
 
@@ -884,11 +985,11 @@ class Engine {
 
     const scored = [];
     for (const m of rootMoves) {
-      pos.make(m);
+      this.makeNN(m);
       let s;
       try { s = -this.search(depth - 1, -INF, INF, 1, true); }
-      catch (e) { if (e instanceof AbortSearch) { pos.unmake(); break; } pos.unmake(); throw e; }
-      pos.unmake();
+      catch (e) { if (e instanceof AbortSearch) { this.unmakeNN(); break; } this.unmakeNN(); throw e; }
+      this.unmakeNN();
       scored.push({ m, s: s + (this.rnd() * 2 - 1) * noise });
     }
     scored.sort((a, b2) => b2.s - a.s);
