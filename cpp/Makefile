@@ -1,5 +1,5 @@
 CXX ?= g++
-CXXFLAGS = -O2 -std=c++17 -Wall
+CXXFLAGS = -O2 -std=c++17 -Wall -pthread
 
 all: vega vega2
 

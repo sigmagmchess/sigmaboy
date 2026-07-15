@@ -21,6 +21,8 @@
 #include <iostream>
 #include <chrono>
 #include <algorithm>
+#include <thread>
+#include <atomic>
 
 using namespace std;
 using U64 = uint64_t;
@@ -641,6 +643,13 @@ static const int MAX_PLY = 96;
 enum { TT_EXACT = 1, TT_LOWER = 2, TT_UPPER = 3 };
 struct TTEntry { U64 key; int32_t move; int16_t score; int8_t depth; uint8_t flag; uint8_t age; };
 
+// shared across search threads (benign races on entries, standard for Lazy SMP)
+static vector<TTEntry> g_tt(size_t(1) << 22);
+static size_t g_ttMask = (size_t(1) << 22) - 1;
+static atomic<bool> g_stop{false};
+static atomic<uint64_t> g_nodes{0};
+static int g_threads = 1;
+
 static int LMR_TABLE[64][64];
 static void initLMR() {
   for (int d = 0; d < 64; d++)
@@ -650,9 +659,10 @@ static void initLMR() {
 
 struct Engine {
   Position pos;
-  vector<TTEntry> tt;
-  size_t ttMask = 0;
+  vector<TTEntry>& tt = g_tt;
+  size_t& ttMask = g_ttMask;
   uint8_t age = 0;
+  bool isHelper = false;
   int killer1[MAX_PLY] = {0}, killer2[MAX_PLY] = {0};
   int history[2 * 7 * 64] = {0};
   int counter[2 * 7 * 64] = {0};
@@ -665,14 +675,14 @@ struct Engine {
   bool useDeadline = false;
   bool aborted = false;
 
-  Engine() { resizeTT(64); }
+  Engine() {}
 
   void resizeTT(long mb) {
     size_t entries = 1 << 16;
     while ((entries << 1) * sizeof(TTEntry) <= size_t(mb) * 1024 * 1024 && entries < (size_t(1) << 26))
       entries <<= 1;
-    tt.assign(entries, TTEntry{});
-    ttMask = entries - 1;
+    g_tt.assign(entries, TTEntry{});
+    g_ttMask = entries - 1;
   }
 
   void clearTables() {
@@ -684,7 +694,13 @@ struct Engine {
   }
 
   void checkTime() {
-    if ((nodes & 2047) == 0 && useDeadline && Clock::now() > deadline) aborted = true;
+    if ((nodes & 2047) == 0) {
+      if (g_stop.load(memory_order_relaxed)) { aborted = true; return; }
+      if (!isHelper && useDeadline && Clock::now() > deadline) {
+        aborted = true;
+        g_stop.store(true, memory_order_relaxed);
+      }
+    }
   }
 
   int histIdx(int c, int piece, int to) const { return c * 7 * 64 + piece * 64 + to; }
@@ -970,9 +986,39 @@ struct Engine {
     return bestScore;
   }
 
+  // helper thread body: iterative deepening, no output, fills the shared TT
+  void helperLoop(const Position& root, int maxDepth, int offset) {
+    isHelper = true;
+    pos = root;
+    aborted = false;
+    nodes = 0;
+    age++;
+    memset(killer1, 0, sizeof(killer1));
+    memset(killer2, 0, sizeof(killer2));
+    for (int depth = 1 + (offset & 1); depth <= maxDepth && !g_stop.load(memory_order_relaxed); depth++) {
+      search(depth, -INF, INF, 0, true);
+      if (aborted) break;
+    }
+    g_nodes.fetch_add(nodes, memory_order_relaxed);
+  }
+
   int think(int maxDepth, long movetimeMs, bool infoOut) {
     nodes = 0;
     aborted = false;
+    g_stop.store(false, memory_order_relaxed);
+    g_nodes.store(0, memory_order_relaxed);
+
+    // Lazy SMP: spawn helper searchers on the same root
+    vector<thread> helpers;
+    vector<Engine>* helperEngines = nullptr;
+    if (g_threads > 1) {
+      helperEngines = new vector<Engine>(g_threads - 1);
+      for (int i = 0; i < g_threads - 1; i++) {
+        Engine& h = (*helperEngines)[i];
+        thread t(&Engine::helperLoop, &h, cref(pos), maxDepth, i);
+        helpers.push_back(move(t));
+      }
+    }
     useDeadline = movetimeMs > 0;
     auto t0 = Clock::now();
     if (useDeadline) {
@@ -1079,6 +1125,12 @@ struct Engine {
       if (aborted) break;
       if (abs(bestScore) > MATE_BOUND && depth >= 6) break;
       if (useDeadline && Clock::now() > softDeadline) break;
+    }
+    if (!helpers.empty()) {
+      g_stop.store(true, memory_order_relaxed);
+      for (auto& t : helpers) t.join();
+      nodes += g_nodes.load(memory_order_relaxed);
+      delete helperEngines;
     }
     return bestMove;
   }
@@ -1232,6 +1284,7 @@ int main() {
   initLMR();
 
   Engine eng;
+  eng.resizeTT(64);
   eng.pos.load(START_FEN);
 
   string line;
@@ -1244,6 +1297,7 @@ int main() {
       printf("id name VEGA 2.0 bitboard\n");
       printf("id author SigmaBoy project\n");
       printf("option name Hash type spin default 64 min 16 max 1024\n");
+      printf("option name Threads type spin default 1 min 1 max 8\n");
       printf("uciok\n");
       fflush(stdout);
     } else if (cmd == "isready") {
@@ -1256,6 +1310,7 @@ int main() {
         else if (tok == "value") ss >> value;
       }
       if (name == "Hash" && !value.empty()) eng.resizeTT(atol(value.c_str()));
+      if (name == "Threads" && !value.empty()) g_threads = max(1, min(8, atoi(value.c_str())));
     } else if (cmd == "ucinewgame") {
       eng.clearTables();
     } else if (cmd == "position") {
