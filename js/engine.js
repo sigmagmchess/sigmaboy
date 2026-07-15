@@ -369,7 +369,6 @@ class Engine {
     this.history = new Int32Array(2 * 7 * 128);
     this.counter = new Int32Array(2 * 7 * 128); // countermove heuristic
     this.evalStack = new Int32Array(MAX_PLY);
-    this.excludedMove = new Int32Array(MAX_PLY);
     this.pvTable = [];
     this.pvLen = new Int32Array(MAX_PLY);
     this.scoreBufs = [];
@@ -718,20 +717,17 @@ class Engine {
     const isPv = beta - alpha > 1;
 
     // transposition table probe
-    const excluded = this.excludedMove[ply];
     const idx = (pos.hashLo & this.ttMask) >>> 0;
-    let ttMove = 0, ttHitDepth = -1, ttHitScore = 0, ttHitFlag = 0;
+    let ttMove = 0;
     if (this.ttKey[idx] === pos.hashHi && this.ttFlag[idx] !== 0) {
       ttMove = this.ttMove[idx];
-      ttHitDepth = this.ttDepth[idx];
-      ttHitScore = this.ttScore[idx];
-      ttHitFlag = this.ttFlag[idx];
-      if (!isPv && ply > 0 && !excluded && ttHitDepth >= depth) {
-        let s = ttHitScore;
+      if (!isPv && ply > 0 && this.ttDepth[idx] >= depth) {
+        let s = this.ttScore[idx];
         if (s > MATE_BOUND) s -= ply; else if (s < -MATE_BOUND) s += ply;
-        if (ttHitFlag === TT_EXACT) return s;
-        if (ttHitFlag === TT_LOWER && s >= beta) return s;
-        if (ttHitFlag === TT_UPPER && s <= alpha) return s;
+        const f = this.ttFlag[idx];
+        if (f === TT_EXACT) return s;
+        if (f === TT_LOWER && s >= beta) return s;
+        if (f === TT_UPPER && s <= alpha) return s;
       }
     }
 
@@ -739,7 +735,7 @@ class Engine {
     this.evalStack[ply] = staticEval;
     const improving = !inCheck && ply >= 2 && staticEval > this.evalStack[ply - 2];
 
-    if (!isPv && !inCheck && !excluded && Math.abs(beta) < MATE_BOUND) {
+    if (!isPv && !inCheck && Math.abs(beta) < MATE_BOUND) {
       // reverse futility pruning (static null move)
       if (depth <= 6 && staticEval - (improving ? 70 : 90) * depth >= beta)
         return staticEval;
@@ -777,22 +773,9 @@ class Engine {
     const scores = this.scoreMoves(moves, ttMove, ply);
     const prevM = pos.lastMove();
 
-    // singular extension: is the TT move the only move that holds?
-    let singularExt = 0;
-    if (ply > 0 && !excluded && depth >= 8 && ttMove &&
-        ttHitDepth >= depth - 3 && ttHitFlag !== TT_UPPER &&
-        Math.abs(ttHitScore) < MATE_BOUND) {
-      const sBeta = ttHitScore - 2 * depth;
-      this.excludedMove[ply] = ttMove;
-      const v = this.search(depth >> 1, sBeta - 1, sBeta, ply, false);
-      this.excludedMove[ply] = 0;
-      if (v < sBeta) singularExt = 1; // every alternative fails low → extend the TT move
-    }
-
     let legal = 0, bestScore = -INF, bestMove = 0, ttStoreFlag = TT_UPPER;
     for (let i = 0; i < moves.length; i++) {
       const m = this.pickMove(moves, scores, i);
-      if (m === excluded) continue;
       const capt = mCapt(m), promo = mPromo(m);
       const quiet = !mIsCapture(m) && !promo;
 
@@ -811,11 +794,10 @@ class Engine {
 
       if (futile && quiet && legal > 1 && !givesCheck) { this.unmakeNN(); continue; }
 
-      const ext = (m === ttMove && singularExt) ? 1 : 0;
       let score;
       try {
         if (legal === 1) {
-          score = -this.search(depth - 1 + ext, -beta, -alpha, ply + 1, true);
+          score = -this.search(depth - 1, -beta, -alpha, ply + 1, true);
         } else {
           // late move reductions (log table)
           let R = 0;
@@ -864,14 +846,11 @@ class Engine {
       }
     }
 
-    if (legal === 0) {
-      if (excluded) return alpha; // only the excluded move was legal → fail low vs sBeta window
-      return inCheck ? -MATE + ply : 0;
-    }
+    if (legal === 0) return inCheck ? -MATE + ply : 0;
 
-    // store to TT (prefer deeper / fresher entries; never from exclusion searches)
-    if (!excluded && (this.ttFlag[idx] === 0 || this.ttAge[idx] !== this.age ||
-        depth >= this.ttDepth[idx] || ttStoreFlag === TT_EXACT)) {
+    // store to TT (prefer deeper / fresher entries)
+    if (this.ttFlag[idx] === 0 || this.ttAge[idx] !== this.age ||
+        depth >= this.ttDepth[idx] || ttStoreFlag === TT_EXACT) {
       let stScore = bestScore;
       if (stScore > MATE_BOUND) stScore += ply; else if (stScore < -MATE_BOUND) stScore -= ply;
       this.ttKey[idx] = pos.hashHi;
