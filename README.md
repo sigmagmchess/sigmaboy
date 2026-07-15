@@ -71,8 +71,15 @@ Motor, Stockfish 18 Lite değerlendirmesinden damıtılmış 768→128 clipped-R
 sıfırdan hesapla birebirliği 1230 düğümde doğrulandı; NNUE kipinde motor
 saniyede 422 bin düğüme çıkar). Kıyas maçlarında klasik el yapımı değerlendirme
 (HCE) hâlâ daha güçlü olduğundan **varsayılan kip HCE'dir**; ağ `engine.evalMode
-= 'nnue'` ile etkinleştirilebilir. Eğitim hattı (`gen-positions` → SF etiketleme
-→ SGD eğitimi) yeniden çalıştırılabilir durumda.
+= 'nnue'` ile etkinleştirilebilir. Eğitim hattı (`gen-positions`/`vega2 selfplay`
+→ SF etiketleme → SGD eğitimi) yeniden çalıştırılabilir durumda.
+
+**Denenen üç NNUE yaklaşımı da maçla reddedildi** (dürüst negatif sonuç):
+sadece-SF-statik (H=128, %3 ve %17), kendi-oyun + oyun sonucu harmanı
+(H=192, %0). Değerlendirmeler materyali/pozisyonu doğru ayırt etse de
+(artımlı akümülatör 800+ düğümde birebir doğrulandı), oyun oynamada el
+yapımı değerlendirmenin gücünü aşamadılar — küçük ağ + sınırlı kendi-oyun
+verisiyle beklenen bir sonuç. Daha büyük/derin veriyle tekrar denenebilir.
 
 ## Arayüz
 
