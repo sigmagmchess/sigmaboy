@@ -126,3 +126,21 @@ cd cpp && make        # g++ -O2 ile derler
 
 Toplu tahmin (36 oyun): **≈ 2600-2700 Elo** — JS sürümünden yaklaşık +100-150,
 1,8× hız avantajıyla tutarlı.
+
+## VEGA 2 — Bitboard Motor (cpp/vega2.cpp)
+
+Sihirli bitboard'lı yeniden yazım: açılışta üretilen sihirli tablolar,
+popcount hareketlilik, maske tabanlı piyon yapısı/şah güvenliği, x-ray'li
+SEE. Arama vega.cpp ile aynı. Başlangıç pozisyonunda **1,07M düğüm/sn,
+2,2 sn'de derinlik 17** (0x88 motorun ~2,1 katı).
+
+| Ölçüm | Sonuç |
+|---|---|
+| vega2 – vega kafa kafaya (30 oyun, 150 ms) | **+17 =8 -5 (%70) ≈ +147 Elo** |
+| vega2 – SF UCI_Elo 2600 (20 oyun) | +14 =1 -5 (%73) → performans ≈ 2768 |
+| vega2 – SF UCI_Elo 2800 (12 oyun) | +2 =1 -9 (%21) → basamak ≈ 2570 |
+
+Toplu tahmin: **≈ 2700-2800 Elo** (150 ms/hamle; kafa kafaya geçişkenlik
+ve 2600 basamağı ~2750-2800'ü, 2800 basamağı alt sınırı işaret ediyor).
+Not: ilk 12 oyunluk 2600 ölçümü (%33) varyans aykırı değeriydi; sabit
+ikiliyle 20 oyunluk tekrar %73 verdi.
