@@ -1,10 +1,15 @@
 CXX ?= g++
 CXXFLAGS = -O2 -std=c++17 -Wall
 
+all: vega vega2
+
 vega: vega.cpp
 	$(CXX) $(CXXFLAGS) -o vega vega.cpp
 
-clean:
-	rm -f vega
+vega2: vega2.cpp
+	$(CXX) $(CXXFLAGS) -o vega2 vega2.cpp
 
-.PHONY: clean
+clean:
+	rm -f vega vega2
+
+.PHONY: all clean
