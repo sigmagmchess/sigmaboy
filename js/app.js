@@ -151,7 +151,7 @@ const S = {
   },
   opts: { cpu: 100, anaTime: 4000, hashMb: 32 }, // motor kaynak ayarları
   ana: {
-    on: true, multipv: 3, movetime: 4000,
+    on: true, multipv: 3,
     lines: [],                     // latest info per multipv
     report: null,                  // {evals, mates, best, classes, accW, accB}
     reportRunning: false,

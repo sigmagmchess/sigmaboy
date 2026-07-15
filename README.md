@@ -140,6 +140,12 @@ SEE. Arama vega.cpp ile aynı. Başlangıç pozisyonunda **1,07M düğüm/sn,
 | vega2 – SF UCI_Elo 2600 (20 oyun) | +14 =1 -5 (%73) → performans ≈ 2768 |
 | vega2 – SF UCI_Elo 2800 (12 oyun) | +2 =1 -9 (%21) → basamak ≈ 2570 |
 
+Ek özellikler:
+- **Lazy SMP**: `setoption name Threads value N` (1-8) — paylaşımlı TT
+  üzerinde yardımcı arayıcılar; çok çekirdekte belirgin güç artışı
+- **selfplay N movetime seed**: NNUE eğitim verisi üretimi
+  (`fen;beyaz_cp;sonuç` satırları; rastgele açılış + erken hükme bağlama)
+
 Toplu tahmin: **≈ 2700-2800 Elo** (150 ms/hamle; kafa kafaya geçişkenlik
 ve 2600 basamağı ~2750-2800'ü, 2800 basamağı alt sınırı işaret ediyor).
 Not: ilk 12 oyunluk 2600 ölçümü (%33) varyans aykırı değeriydi; sabit
