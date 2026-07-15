@@ -147,8 +147,9 @@ const S = {
 S.line = S.game;
 
 const LEVEL_DESC = ['', 'Yeni başlayan (~600)', 'Acemi (~900)', 'Gelişen (~1200)', 'Orta düzey (~1600)',
-  'Uzman (~2300)', 'Usta adayı (~2400)', 'Usta (~2500)', 'Kıdemli usta (~2550)', 'Maksimum güç (2600+)'];
-const LEVEL_TIME = { 5: 400, 6: 1000, 7: 2500, 8: 6000, 9: 12000 };
+  'Uzman (~2300)', 'Usta adayı (~2400)', 'Usta (~2500)', 'Kıdemli usta (~2550)', 'Büyükusta gücü (2600+)',
+  'BATHANTAHA — nihai güç (30 sn/hamle)'];
+const LEVEL_TIME = { 5: 400, 6: 1000, 7: 2500, 8: 6000, 9: 12000, 10: 30000 };
 
 const CLASS_INFO = {
   brilliant:  { label: '!!', name: 'Parlak',        color: '#26c2a3' },
@@ -667,7 +668,7 @@ function updatePlayerBars() {
   const topIsBlack = !S.flipped;
   const nTop = $('pname-top'), nBot = $('pname-bottom');
   if (S.mode === 'play' && S.play.active) {
-    const engineName = `SigmaBoy · Seviye ${S.play.level}`;
+    const engineName = S.play.level >= 10 ? 'VEGA · BATHANTAHA' : `VEGA · Seviye ${S.play.level}`;
     const humanName = 'Sen';
     const engineIsWhite = S.play.engineColor === SC.WHITE;
     const topWhite = S.flipped;
@@ -807,7 +808,7 @@ function startGame(startFen) {
 async function engineMove() {
   if (!S.play.active || S.play.over) return;
   S.play.thinking = true;
-  $('engine-status').textContent = 'SigmaBoy düşünüyor…';
+  $('engine-status').textContent = S.play.level >= 10 ? 'VEGA derin düşünüyor (BATHANTAHA)…' : 'VEGA düşünüyor…';
   const level = S.play.level;
   const params = {
     fen: S.game.startFen,
@@ -876,7 +877,7 @@ function endGame(status) {
       text = (winnerWhite ? 'Beyaz' : 'Siyah') + ' mat etti!';
       result = winnerWhite ? '1-0' : '0-1';
       const humanWon = winnerWhite !== engineWhite;
-      text += humanWon ? ' 🎉 Kazandın!' : ' SigmaBoy kazandı.';
+      text += humanWon ? ' 🎉 Kazandın!' : ' VEGA kazandı.';
       break;
     }
     case 'stalemate': text = 'Pat — berabere.'; result = '1/2-1/2'; break;
@@ -887,7 +888,7 @@ function endGame(status) {
     case 'timeout-b': text = 'Siyahın süresi bitti.'; result = '1-0'; break;
     case 'resign': {
       const humanWhite = !engineWhite;
-      text = 'Terk ettin. SigmaBoy kazandı.';
+      text = 'Terk ettin. VEGA kazandı.';
       result = humanWhite ? '0-1' : '1-0';
       break;
     }

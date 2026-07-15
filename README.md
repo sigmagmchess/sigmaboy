@@ -1,6 +1,6 @@
-# ♞ SigmaBoy — Satranç Botu & Uygulaması
+# ♞ VEGA (SigmaBoy) — Satranç Botu & Uygulaması
 
-Tamamen tarayıcıda çalışan, bağımlılıksız (sıfır kütüphane) güçlü bir satranç motoru ve tam donanımlı arayüz. Motor bir Web Worker içinde çalışır; kurallar kütüphanesi perft testleriyle doğrulanmıştır.
+Tamamen tarayıcıda çalışan, bağımlılıksız (sıfır kütüphane) güçlü bir satranç motoru (**VEGA**) ve tam donanımlı arayüz. En üst zorluk seviyesi **BATHANTAHA** hamle başına 30 saniye düşünür. Motor bir Web Worker içinde çalışır; kurallar kütüphanesi perft testleriyle doğrulanmıştır.
 
 ## Çalıştırma
 
@@ -95,3 +95,20 @@ node -e "const SC=require('./js/chess.js');console.log(SC.perft(new SC.Position(
 | `js/app.js` | Arayüz: tahta, modlar, rapor, saatler, düzenleyici |
 | `js/pieces.js` | Özgün SVG taş seti |
 | `js/sound.js` | Sentezlenmiş sesler |
+
+
+## C++ Sürümü (cpp/vega.cpp)
+
+Aynı motorun tek dosyalık **C++17 UCI** portu — Arena, CuteChess, BanksiaGUI
+veya lichess-bot gibi her UCI arayüzüne takılabilir:
+
+```bash
+cd cpp && make        # g++ -O2 ile derler
+./vega                # UCI modu; ek komutlar: "bench" (perft doğrulama), "perft N"
+```
+
+- Aynı mimari: 0x88 tahta, PeSTO tapered değerlendirme, PVS + TT + null-move +
+  LMR/LMP + SEE + killer/countermove/history + IID + aspirasyon
+- Doğrulama: 5 standart perft pozisyonunun tamamı geçer (`bench`)
+- Hız: JS sürümünün ~1,8 katı (≈650k düğüm/sn, başlangıç pozisyonunda 2 sn'de derinlik 16)
+- Zaman yönetimi: `go movetime/depth/wtime+winc` desteklenir
