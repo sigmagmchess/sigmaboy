@@ -321,7 +321,7 @@ struct Position {
     U64 pw = pawns;
     while (pw) {
       int from = popLsb(pw);
-      U64 caps = pawnAtt[us][from] & opp & ~bb[them][KING];
+      U64 caps = pawnAtt[us][from] & opp;
       while (caps) {
         int to = popLsb(caps);
         int capt = sqPiece[to];
@@ -336,10 +336,9 @@ struct Position {
         out[n++] = encodeMove(from, ep, PAWN, PAWN, 0, F_EP);
     }
 
-    // knights, king (enemy king is never a capture target)
+    // knights, king
     U64 kn = bb[us][KNIGHT];
-    const U64 noK = ~bb[them][KING];
-    const U64 target = (capsOnly ? opp : ~own) & noK;
+    const U64 target = capsOnly ? opp : ~own;
     while (kn) {
       int from = popLsb(kn);
       U64 att = knightAtt[from] & target;
@@ -826,6 +825,17 @@ struct Engine {
   }
 
   int search(int depth, int alpha, int beta, int ply, bool nullOk) {
+    if (!pos.bb[WHITE][KING] || !pos.bb[BLACK][KING]) {
+      fprintf(stderr, "KING MISSING at ply %d! moves:", ply);
+      for (auto& u : pos.st) {
+        int m = u.move;
+        if (!m) { fprintf(stderr, " null"); continue; }
+        fprintf(stderr, " %s%s(p%d c%d pr%d f%x)", sqName(mFrom(m)).c_str(), sqName(mTo(m)).c_str(),
+                mPiece(m), mCapt(m), mPromo(m), (m >> 21) & 7);
+      }
+      fprintf(stderr, "\n");
+      exit(3);
+    }
     pvLen[ply] = 0;
     if (ply > 0) {
       if (pos.halfmove >= 100 || pos.isRepetition()) { nodes++; return 0; }
