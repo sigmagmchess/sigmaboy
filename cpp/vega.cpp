@@ -735,8 +735,22 @@ struct Engine {
     if (aborted) return 0;
     if (ply >= MAX_PLY - 1) return evaluate(pos);
 
+    // TT probe: any stored depth bounds a quiescence node
+    size_t qidx = pos.hash & ttMask;
+    TTEntry& qe = tt[qidx];
+    int ttMove = 0;
+    if (qe.key == pos.hash && qe.flag != 0) {
+      ttMove = qe.move;
+      int ts = qe.score;
+      if (ts > MATE_BOUND) ts -= ply; else if (ts < -MATE_BOUND) ts += ply;
+      if (qe.flag == TT_EXACT) return ts;
+      if (qe.flag == TT_LOWER && ts >= beta) return ts;
+      if (qe.flag == TT_UPPER && ts <= alpha) return ts;
+    }
+
+    const int origAlpha = alpha;
     bool chk = pos.inCheck();
-    int best;
+    int best, bestMove = 0;
     if (chk) best = -MATE + ply;
     else {
       best = evaluate(pos);
@@ -746,7 +760,7 @@ struct Engine {
 
     int moves[256], scores[256];
     int n = pos.genMoves(moves, !chk);
-    scoreMoves(moves, scores, n, 0, ply);
+    scoreMoves(moves, scores, n, ttMove, ply);
     int legal = 0;
     for (int i = 0; i < n; i++) {
       int m = pickMove(moves, scores, n, i);
@@ -762,6 +776,7 @@ struct Engine {
       if (aborted) return 0;
       if (score > best) {
         best = score;
+        bestMove = m;
         if (score > alpha) {
           alpha = score;
           if (alpha >= beta) break;
@@ -769,6 +784,13 @@ struct Engine {
       }
     }
     if (chk && legal == 0) return -MATE + ply;
+
+    // store as depth-0: never displaces deeper same-generation entries
+    if (qe.flag == 0 || qe.age != age || qe.depth <= 0) {
+      int ss = best;
+      if (ss > MATE_BOUND) ss += ply; else if (ss < -MATE_BOUND) ss -= ply;
+      qe = {pos.hash, bestMove, int16_t(ss), int8_t(0), uint8_t(best >= beta ? TT_LOWER : best > origAlpha ? TT_EXACT : TT_UPPER), age};
+    }
     return best;
   }
 
