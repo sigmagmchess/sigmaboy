@@ -160,6 +160,7 @@ const S = {
   editor: { pos: new Position(START_FEN), brush: 'cursor' },
   shapes: [],       // user-drawn {from,to,color} (from===to → circle)
   hintArrow: null,
+  threatArrow: null,
   selected: -1, dests: [],
   pendingPromo: null,
   anaSeq: 0,
@@ -378,6 +379,7 @@ function drawShapes() {
     svg += arrowSvg(from, to, '#5b9bd1', 14);
   }
   if (S.hintArrow) svg += arrowSvg(S.hintArrow.from, S.hintArrow.to, '#e8a33d', 15);
+  if (S.threatArrow) svg += arrowSvg(S.threatArrow.from, S.threatArrow.to, '#c4423c', 15);
   overlayEl.innerHTML = svg;
 }
 
@@ -479,7 +481,7 @@ function commitMove(mi) {
   }
 
   _vpCacheFen = null;
-  S.shapes = []; S.hintArrow = null;
+  S.shapes = []; S.hintArrow = null; S.threatArrow = null;
   animateMove(mi, false);
   playMoveSound(mi, isCapture, pos);
   afterPositionChange();
@@ -512,7 +514,7 @@ boardEl.addEventListener('pointerdown', e => {
     return;
   }
   if (e.button !== 0) return;
-  S.shapes = []; S.hintArrow = null; drawShapes();
+  S.shapes = []; S.hintArrow = null; S.threatArrow = null; drawShapes();
 
   if (S.mode === 'editor') { editorPointerDown(sq, e); return; }
 
@@ -582,7 +584,7 @@ function setView(i, animDir) {
   if (i === prev) return;
   S.view = i;
   _vpCacheFen = null;
-  S.selected = -1; S.dests = []; S.shapes = []; S.hintArrow = null;
+  S.selected = -1; S.dests = []; S.shapes = []; S.hintArrow = null; S.threatArrow = null;
   if (animDir === 1 && i === prev + 1) animateMove(S.line.moves[i].mi, false);
   else if (animDir === -1 && prev === i + 1 && prev >= 0) animateMove(S.line.moves[prev].mi, true);
   else renderAll();
@@ -606,11 +608,65 @@ document.addEventListener('keydown', e => {
 
 function afterPositionChange() {
   renderMoveList();
+  updateOpeningName();
   updateEvalBarFromKnown();
   if (S.mode === 'analysis') requestLiveAnalysis();
   drawShapes();
   updatePlayerBars();
   updateHighlights();
+}
+
+// ================================================================ opening names
+const OPENINGS_TR = [
+  ['e4 e5 Nf3 Nc6 Bb5 Nf6', 'Berlin Savunması (İspanyol)'],
+  ['e4 e5 Nf3 Nc6 Bb5 a6', 'İspanyol Açılışı (Ruy Lopez)'],
+  ['e4 e5 Nf3 Nc6 Bb5', 'İspanyol Açılışı'],
+  ['e4 e5 Nf3 Nc6 Bc4 Bc5', 'İtalyan Açılışı (Giuoco Piano)'],
+  ['e4 e5 Nf3 Nc6 Bc4 Nf6', 'İki At Savunması'],
+  ['e4 e5 Nf3 Nc6 d4', 'İskoç Açılışı'],
+  ['e4 e5 Nf3 Nf6', 'Petrov Savunması'],
+  ['e4 e5 f4', 'Kral Gambiti'],
+  ['e4 e5', 'Açık Oyun'],
+  ['e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6', 'Sicilya — Najdorf'],
+  ['e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 g6', 'Sicilya — Ejder Varyantı'],
+  ['e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 Nf6 Nc3 e5', 'Sicilya — Sveshnikov'],
+  ['e4 c5 Nf3 e6', 'Sicilya — Taimanov/Kan'],
+  ['e4 c5 c3', 'Sicilya — Alapin'],
+  ['e4 c5', 'Sicilya Savunması'],
+  ['e4 e6', 'Fransız Savunması'],
+  ['e4 c6', 'Karo-Kann Savunması'],
+  ['e4 d6 d4 Nf6', 'Pirc Savunması'],
+  ['e4 d5', 'İskandinav Savunması'],
+  ['e4 g6', 'Modern Savunma'],
+  ['d4 d5 c4 e6', 'Vezir Gambiti Reddedilmiş'],
+  ['d4 d5 c4 dxc4', 'Vezir Gambiti Kabul'],
+  ['d4 d5 c4 c6', 'Slav Savunması'],
+  ['d4 d5 c4', 'Vezir Gambiti'],
+  ['d4 d5 Bf4', 'London Sistemi'],
+  ['d4 Nf6 c4 e6 Nc3 Bb4', 'Nimzo-Hint Savunması'],
+  ['d4 Nf6 c4 e6 Nf3 b6', 'Vezir-Hint Savunması'],
+  ['d4 Nf6 c4 e6 g3', 'Katalan Açılışı'],
+  ['d4 Nf6 c4 g6 Nc3 d5', 'Grünfeld Savunması'],
+  ['d4 Nf6 c4 g6', 'Kral-Hint Savunması'],
+  ['d4 Nf6 c4 c5 d5 b5', 'Benko Gambiti'],
+  ['d4 Nf6 c4 c5', 'Benoni Savunması'],
+  ['d4 Nf6 Bg5', 'Trompowsky Atağı'],
+  ['d4 f5', 'Hollanda Savunması'],
+  ['c4 e5', 'İngiliz Açılışı — Ters Sicilya'],
+  ['c4', 'İngiliz Açılışı'],
+  ['Nf3 d5 g3', 'Reti Açılışı'],
+  ['Nf3', 'Reti / Zukertort'],
+];
+function updateOpeningName() {
+  const sans = S.game.moves.map(m => m.san.replace(/[+#]/g, ''));
+  const line = sans.join(' ');
+  let name = '';
+  for (const [pre, nm] of OPENINGS_TR) {
+    if (line.startsWith(pre) && pre.length > name.length) { name = nm; break; }
+  }
+  const el1 = $('opening-name-play'), el2 = $('opening-name-ana');
+  if (el1) el1.textContent = name;
+  if (el2) el2.textContent = name;
 }
 
 // ================================================================ move list
@@ -922,7 +978,50 @@ function endGame(status) {
   $('game-result-text').textContent = text;
   showResultOverlay();
   renderClocks();
+  saveGameToHistory(result);
 }
+
+function saveGameToHistory(result) {
+  if (S.game.moves.length < 6) return;
+  try {
+    const hist = JSON.parse(localStorage.getItem('sb-games') || '[]');
+    hist.unshift({
+      d: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      pgn: buildPgn(),
+      result,
+      level: S.play.level,
+      color: S.play.engineColor === SC.WHITE ? 'b' : 'w',
+      n: S.game.moves.length,
+    });
+    while (hist.length > 20) hist.pop();
+    localStorage.setItem('sb-games', JSON.stringify(hist));
+    renderHistory();
+  } catch (e) { /* dolu localStorage vb. */ }
+}
+
+function renderHistory() {
+  const box = $('game-history');
+  if (!box) return;
+  let hist = [];
+  try { hist = JSON.parse(localStorage.getItem('sb-games') || '[]'); } catch (e) {}
+  if (!hist.length) { box.innerHTML = '<div class="hist-empty">Henüz kayıtlı oyun yok — bir oyun bitirin.</div>'; return; }
+  box.innerHTML = '';
+  hist.forEach((h, i) => {
+    const div = document.createElement('div');
+    div.className = 'hist-item';
+    const won = (h.color === 'w' && h.result === '1-0') || (h.color === 'b' && h.result === '0-1');
+    const drew = h.result === '1/2-1/2';
+    div.innerHTML = `<span>${h.d} · Sv${h.level} · ${h.n} yarı-hamle</span>
+      <span class="hist-result ${won ? 'win' : drew ? '' : 'loss'}">${h.result}</span>`;
+    div.title = 'Analiz için aç';
+    div.addEventListener('click', () => { loadFromPgn(h.pgn); });
+    box.appendChild(div);
+  });
+}
+$('btn-clear-history').addEventListener('click', () => {
+  localStorage.removeItem('sb-games');
+  renderHistory();
+});
 
 $('btn-start').addEventListener('click', () => startGame());
 function backToNewGame() {
@@ -1260,6 +1359,25 @@ function renderReport() {
 }
 
 $('btn-full-analysis').addEventListener('click', runFullAnalysis);
+
+// "Tehdit": hamle sırası rakibe geçseydi oynayacağı en iyi hamleyi göster
+$('btn-threat').addEventListener('click', async () => {
+  if (S.ana.reportRunning) return;
+  const pos = viewPos();
+  if (pos.inCheck()) { alert('Şah altındayken tehdit tanımsızdır.'); return; }
+  const f = viewFen().split(' ');
+  f[1] = f[1] === 'w' ? 'b' : 'w';
+  f[3] = '-';
+  const flipped = f.join(' ');
+  $('btn-threat').disabled = true;
+  const res = await engine.request({ fen: flipped, movetime: 1200, depth: 20, multipv: 1 });
+  $('btn-threat').disabled = false;
+  if (res && res.bestmove) {
+    S.threatArrow = { from: SC.algToSq(res.bestmove.slice(0, 2)), to: SC.algToSq(res.bestmove.slice(2, 4)) };
+    drawShapes();
+    if (S.mode === 'analysis') requestLiveAnalysis(); // canlı analiz kaldığı yerden sürsün
+  }
+});
 $('btn-analyze-game').addEventListener('click', () => {
   switchMode('analysis');
   runFullAnalysis();
@@ -1335,7 +1453,10 @@ $('btn-import').addEventListener('click', () => {
     } catch (e) { alert('Geçersiz FEN.'); }
     return;
   }
-  // PGN
+  loadFromPgn(text);
+});
+
+function loadFromPgn(text) {
   const headers = SC.pgnHeaders(text);
   const startFen = headers.FEN && headers.SetUp === '1' ? headers.FEN : (headers.FEN || START_FEN);
   const sans = SC.parsePgnMoves(text);
@@ -1351,7 +1472,7 @@ $('btn-import').addEventListener('click', () => {
   }
   if (moves.length === 0 && sans.length > 0) { alert('PGN çözümlenemedi.'); return; }
   loadGame(startFen, moves);
-});
+}
 
 function loadGame(startFen, moves) {
   S.ana.reportToken++;
@@ -1581,7 +1702,7 @@ function switchMode(mode) {
   S.anaSeq++;
   S.ana.reportToken++; // varsa süren oyun raporunu iptal et
   engine.cancel();
-  S.selected = -1; S.dests = []; S.shapes = []; S.hintArrow = null;
+  S.selected = -1; S.dests = []; S.shapes = []; S.hintArrow = null; S.threatArrow = null;
   document.querySelectorAll('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
   $('panel-play').classList.toggle('hidden', mode !== 'play');
   $('panel-analysis').classList.toggle('hidden', mode !== 'analysis');
@@ -1676,6 +1797,7 @@ function init() {
 
   buildBoard();
   buildPalettes();
+  renderHistory();
   engine.init();
   if (S.opts.hashMb !== 32) engine.setOption({ hashMb: S.opts.hashMb });
   renderAll();

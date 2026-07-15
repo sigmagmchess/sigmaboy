@@ -660,6 +660,7 @@ struct Engine {
   int pvTable[MAX_PLY][MAX_PLY];
   int pvLen[MAX_PLY] = {0};
   U64 nodes = 0;
+  int lastScore = 0; // root score of the last completed think()
   Clock::time_point deadline, softDeadline;
   bool useDeadline = false;
   bool aborted = false;
@@ -1053,6 +1054,7 @@ struct Engine {
         bestMove = iterBest ? iterBest : bestMove;
         bestScore = iterScore;
         prevScore = iterScore;
+        lastScore = iterScore;
 
         if (infoOut) {
           auto ms = chrono::duration_cast<chrono::milliseconds>(Clock::now() - t0).count();
@@ -1081,6 +1083,105 @@ struct Engine {
     return bestMove;
   }
 };
+
+// ----------------------------------------------------------------- FEN out
+static string posToFen(const Position& pos) {
+  string out;
+  for (int r = 7; r >= 0; r--) {
+    int empty = 0;
+    for (int f = 0; f < 8; f++) {
+      int sq = r * 8 + f;
+      if (!pos.sqPiece[sq]) { empty++; continue; }
+      if (empty) { out += char('0' + empty); empty = 0; }
+      char ch = PIECE_CH[pos.sqPiece[sq]];
+      out += pos.sqColor[sq] == WHITE ? char(toupper(ch)) : ch;
+    }
+    if (empty) out += char('0' + empty);
+    if (r) out += '/';
+  }
+  out += pos.side == WHITE ? " w " : " b ";
+  string cr;
+  if (pos.castling & CR_WK) cr += 'K';
+  if (pos.castling & CR_WQ) cr += 'Q';
+  if (pos.castling & CR_BK) cr += 'k';
+  if (pos.castling & CR_BQ) cr += 'q';
+  out += (cr.empty() ? "-" : cr);
+  out += ' ';
+  out += pos.ep >= 0 ? sqName(pos.ep) : "-";
+  out += " " + to_string(pos.halfmove) + " " + to_string(pos.fullmove);
+  return out;
+}
+
+// ----------------------------------------------------------------- selfplay data generation
+// selfplay <games> <movetimeMs> <seed> → stdout: FEN;cpWhite;result  (result: 1/0.5/0 white)
+static void runSelfplay(Engine& eng, int games, long mt, U64 seed) {
+  U64 rs = seed ? seed : 0xABCDEF12345ULL;
+  auto rnd = [&]() { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; };
+  U64 total = 0;
+  for (int g = 0; g < games; g++) {
+    eng.clearTables();
+    eng.pos.load(START_FEN);
+    int randPlies = 6 + int(rnd() % 6);
+    bool dead = false;
+    for (int i = 0; i < randPlies; i++) {
+      int mv[256], sc[256];
+      int nn = eng.pos.genMoves(mv, false);
+      int legal[256], ln = 0;
+      for (int j = 0; j < nn; j++) {
+        eng.pos.make(mv[j]);
+        if (!eng.pos.illegalAfterMove()) legal[ln++] = mv[j];
+        eng.pos.unmake();
+      }
+      (void)sc;
+      if (!ln) { dead = true; break; }
+      eng.pos.make(legal[rnd() % ln]);
+    }
+    if (dead) continue;
+
+    vector<string> lines;   // buffered "fen;cpWhite" — result appended at end
+    double result = 0.5;
+    int decisiveStreak = 0;
+    for (int ply = randPlies; ply < 200; ply++) {
+      int mv[256];
+      int nn = eng.pos.genMoves(mv, false);
+      int ln = 0;
+      for (int j = 0; j < nn; j++) {
+        eng.pos.make(mv[j]);
+        if (!eng.pos.illegalAfterMove()) ln++;
+        eng.pos.unmake();
+        if (ln) break;
+      }
+      if (!ln) { // mate or stalemate
+        result = eng.pos.inCheck() ? (eng.pos.side == WHITE ? 0.0 : 1.0) : 0.5;
+        break;
+      }
+      if (eng.pos.halfmove >= 100 || (ply > 40 && eng.pos.isRepetition())) { result = 0.5; break; }
+
+      int best = eng.think(64, mt, false);
+      if (!best) { result = 0.5; break; }
+      int cpStm = eng.lastScore;
+      int cpWhite = eng.pos.side == WHITE ? cpStm : -cpStm;
+
+      // adjudicate hopeless games early
+      if (abs(cpWhite) > 1200) {
+        if (++decisiveStreak >= 4) { result = cpWhite > 0 ? 1.0 : 0.0; break; }
+      } else decisiveStreak = 0;
+
+      if (ply >= 8 && !eng.pos.inCheck() && abs(cpStm) < 30000 - 1000)
+        lines.push_back(posToFen(eng.pos) + ";" + to_string(cpWhite));
+
+      eng.pos.make(best);
+    }
+    for (auto& l : lines) printf("%s;%.1f\n", l.c_str(), result);
+    total += lines.size();
+    if ((g + 1) % 20 == 0) {
+      fprintf(stderr, "game %d/%d positions %llu\n", g + 1, games, (unsigned long long)total);
+      fflush(stderr);
+    }
+    fflush(stdout);
+  }
+  fprintf(stderr, "DONE games %d positions %llu\n", games, (unsigned long long)total);
+}
 
 // ----------------------------------------------------------------- UCI
 static string moveToUci(int m) {
@@ -1209,6 +1310,10 @@ int main() {
       fflush(stdout);
     } else if (cmd == "bench") {
       runBench(eng);
+    } else if (cmd == "selfplay") {
+      int games = 100; long mt = 30; unsigned long long seed = 1;
+      ss >> games >> mt >> seed;
+      runSelfplay(eng, games, mt, seed);
     } else if (cmd == "quit") {
       break;
     }

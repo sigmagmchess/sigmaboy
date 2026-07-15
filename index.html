@@ -140,6 +140,7 @@
           <button id="btn-newgame" title="Yeni oyun">🆕 Yeni</button>
         </div>
         <div id="engine-status" class="engine-status"></div>
+        <div id="opening-name-play" class="opening-name"></div>
         <div class="movelist-wrap"><ol id="movelist-play" class="movelist"></ol></div>
         <div class="btn-row nav-row">
           <button data-nav="start">⏮</button><button data-nav="prev">◀</button>
@@ -171,6 +172,7 @@
       </div>
 
       <div class="card">
+        <div id="opening-name-ana" class="opening-name"></div>
         <div class="movelist-wrap tall"><ol id="movelist-ana" class="movelist"></ol></div>
         <div id="variation-box" class="hidden">
           <div class="variation-title">Varyant <button id="btn-back-main">ana hatta dön ✕</button></div>
@@ -185,6 +187,7 @@
       <div class="card">
         <div class="btn-row">
           <button class="primary" id="btn-full-analysis">⚡ Oyun Raporu</button>
+          <button id="btn-threat" title="Hamle sırası rakibe geçseydi ne oynardı?">☠ Tehdit</button>
           <select id="ana-speed">
             <option value="400">Hızlı</option>
             <option value="800" selected>Normal</option>
@@ -200,6 +203,12 @@
           <table id="class-table"></table>
         </div>
         <canvas id="eval-graph" height="90"></canvas>
+      </div>
+
+      <div class="card">
+        <h3>Oyun Geçmişi</h3>
+        <div id="game-history"></div>
+        <button id="btn-clear-history" class="small-btn">Geçmişi temizle</button>
       </div>
 
       <div class="card">

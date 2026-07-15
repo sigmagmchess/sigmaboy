@@ -425,3 +425,21 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   #evalbar { width: 22px; }
   #sidebar { width: min(92vw, 560px); }
 }
+
+/* ---------------------------------------------------------- extras */
+.opening-name {
+  font-size: 12px; color: var(--warn); font-weight: 700;
+  min-height: 16px; padding: 0 2px 4px;
+}
+#game-history { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.hist-item {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  background: var(--bg2); border-radius: 6px; padding: 6px 10px;
+  font-size: 12.5px; cursor: pointer;
+}
+.hist-item:hover { background: var(--card2); }
+.hist-item .hist-result { font-weight: 800; }
+.hist-item .hist-result.win { color: var(--accent); }
+.hist-item .hist-result.loss { color: var(--danger); }
+.hist-empty { color: var(--text-dim); font-size: 12.5px; padding: 4px; }
+.small-btn { font-size: 12px; padding: 6px 10px; }
