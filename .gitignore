@@ -1,3 +1,6 @@
 cpp/vega
 cpp/vega2
+cpp/vega2_asan
+cpp/vega2_dbg
+cpp/*_dbg.cpp
 node_modules/
