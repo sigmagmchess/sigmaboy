@@ -873,6 +873,7 @@ class Engine {
 
     let best = { move: rootMoves[0], score: -INF, pv: [rootMoves[0]], depth: 0 };
     let prevScore = 0;
+    let rootCnt = null; // subtree node counts from the last completed iteration
 
     for (let depth = 1; depth <= maxDepth; depth++) {
       let alpha = depth >= 5 ? prevScore - 35 : -INF;
@@ -883,10 +884,20 @@ class Engine {
         iterBest = null;
         let a = alpha;
         const scores = this.scoreMoves(rootMoves, best.move, 0);
+        // root ordering: big subtrees first (they contain the critical replies)
+        if (rootCnt) {
+          for (let i = 0; i < rootMoves.length; i++) {
+            if (scores[i] >= 2000000000) continue; // keep the PV move on top
+            const c = rootCnt.get(rootMoves[i]);
+            if (c !== undefined) scores[i] = c > 1899000000 ? 1899000000 : 1000000 + c;
+          }
+        }
+        const cnt = new Map();
         let aborted = false;
 
         for (let i = 0; i < rootMoves.length; i++) {
           const m = this.pickMove(rootMoves, scores, i);
+          const n0 = this.nodes;
           this.makeNN(m);
           let score;
           try {
@@ -901,6 +912,7 @@ class Engine {
             throw e;
           }
           this.unmakeNN();
+          cnt.set(m, this.nodes - n0);
           if (score > a || i === 0) {
             a = Math.max(a, score);
             const pv = [m];
@@ -916,6 +928,7 @@ class Engine {
         }
         if (iterBest && iterBest.score <= alpha && alpha > -INF) { alpha = Math.max(-INF, alpha - 150); continue; }
         if (iterBest && iterBest.score >= beta && beta < INF) { beta = Math.min(INF, beta + 150); continue; }
+        rootCnt = cnt;
         break;
       }
 
