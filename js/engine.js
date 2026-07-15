@@ -1135,7 +1135,13 @@ if (typeof importScripts === 'function' && typeof postMessage === 'function') {
   let busy = false;
   let stopRequested = false;
   let pending = null;
+  let pendingOpts = null;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  function applyOpts(data) {
+    if (data.hashMb) engine.resizeTT(data.hashMb);
+    postMessage({ type: 'ready', id: data.id });
+  }
 
   async function runGo(payload) {
     busy = true;
@@ -1171,14 +1177,17 @@ if (typeof importScripts === 'function' && typeof postMessage === 'function') {
         const maxDepth = payload.depth || 64;
         let workLeft = infinite ? Infinity : payload.movetime;
         let firstBook = payload.useBook;
-        while (!stopRequested && workLeft > 0) {
+        let bestDepth = -1;
+        const wallCap = Date.now() + 15 * 60 * 1000; // yetim kalmış sonsuz arama emniyeti
+        while (!stopRequested && workLeft > 0 && Date.now() < wallCap) {
           const w = Math.min(sliceMs, workLeft);
           const r = engine.go({ ...payload, useBook: firstBook, movetime: w, depth: maxDepth, onInfo });
           firstBook = false;
-          if (r && r.bestmove) result = r;
+          const dReached = r && r.lines && r.lines[0] ? r.lines[0].depth : 0;
+          // kesilen son dilim daha sığ kalabilir — yalnızca daha derin sonucu benimse
+          if (r && r.bestmove && dReached >= bestDepth) { result = r; bestDepth = dReached; }
           if (r && r.book) break;                                    // opening book hit
           workLeft -= w;
-          const dReached = r && r.lines && r.lines[0] ? r.lines[0].depth : 0;
           if (dReached >= maxDepth) break;                           // depth cap reached
           if (r && r.mate != null && !infinite) break;               // forced mate found
           if (cpu < 100) await sleep(Math.max(10, (w * (100 - cpu)) / cpu));
@@ -1190,6 +1199,7 @@ if (typeof importScripts === 'function' && typeof postMessage === 'function') {
     }
     busy = false;
     postMessage({ type: 'bestmove', id, ...(result || { bestmove: null, pv: [], lines: [] }) });
+    if (pendingOpts) { const o = pendingOpts; pendingOpts = null; applyOpts(o); }
     if (pending) { const p = pending; pending = null; handle(p); }
   }
 
@@ -1211,8 +1221,8 @@ if (typeof importScripts === 'function' && typeof postMessage === 'function') {
         pending = null;
         break;
       case 'setoption':
-        if (data.hashMb) engine.resizeTT(data.hashMb);
-        postMessage({ type: 'ready', id: data.id });
+        if (busy) { pendingOpts = data; return; } // arama bitince uygula
+        applyOpts(data);
         break;
       case 'newgame':
         engine.clearTables();

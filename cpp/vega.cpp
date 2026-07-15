@@ -626,7 +626,7 @@ struct Engine {
   bool useDeadline = false;
   bool aborted = false;
 
-  Engine() { tt.resize(TT_SIZE); }
+  Engine() { resizeTT(64); } // ilan edilen UCI varsayılanıyla tutarlı
 
   // UCI "Hash" option (megabytes) → power-of-two entry count
   void resizeTT(long mb) {

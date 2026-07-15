@@ -35,7 +35,8 @@ class EngineCtl {
     this.worker = null; this.local = null; this.loadingLocal = false;
     this.busy = false; this.queued = null;
     this.seq = 0; this.currentId = 0; this.currentResolve = null;
-    this.onInfo = null; this.bookKeys = new Set();
+    this.currentInfo = null; this.bookKeys = new Set();
+    this.lastOpts = null;
   }
   init() {
     try {
@@ -64,6 +65,7 @@ class EngineCtl {
     s.onload = () => {
       this.local = new window.SigmaEngine.Engine();
       this.bookKeys = new Set(Object.keys(window.SigmaEngine.getBook()));
+      if (this.lastOpts && this.lastOpts.hashMb) this.local.resizeTT(this.lastOpts.hashMb);
       this.loadingLocal = false;
       this.pump();
     };
@@ -72,7 +74,8 @@ class EngineCtl {
   handle(msg) {
     if (msg.type === 'boot') { if (msg.bookKeys) this.bookKeys = new Set(msg.bookKeys); return; }
     if (msg.type === 'info') {
-      if (msg.id === this.currentId && this.onInfo) this.onInfo(msg);
+      // route only to the callback registered with THIS request (id-aligned)
+      if (msg.id === this.currentId && this.currentInfo) this.currentInfo(msg);
       return;
     }
     if (msg.type === 'bestmove' && msg.id === this.currentId) {
@@ -83,18 +86,26 @@ class EngineCtl {
     }
   }
   // latest-wins queue: a queued-but-unsent request is superseded (resolves null)
-  request(params) {
+  request(params, onInfo) {
     return new Promise(resolve => {
       if (this.queued) this.queued.resolve(null);
-      this.queued = { params: { cpu: S.opts.cpu, ...params }, resolve };
+      this.queued = { params: { cpu: S.opts.cpu, ...params }, resolve, onInfo };
       if (this.busy) this.stop(); // break out of a running (possibly infinite) search
       this.pump();
     });
   }
 
+  // drop any queued request and stop the running search (mode switches, engine-off)
+  cancel() {
+    if (this.queued) { this.queued.resolve(null); this.queued = null; }
+    this.stop();
+  }
+
   setOption(opts) {
+    this.lastOpts = { ...(this.lastOpts || {}), ...opts };
     if (this.worker) this.worker.postMessage({ cmd: 'setoption', ...opts });
     else if (this.local && opts.hashMb) this.local.resizeTT(opts.hashMb);
+    // engine yoksa (fallback henüz yükleniyor) lastOpts fallback() içinde uygulanır
   }
   pump() {
     if (this.busy || !this.queued) return;
@@ -104,6 +115,7 @@ class EngineCtl {
     this.busy = true;
     this.currentId = ++this.seq;
     this.currentResolve = q.resolve;
+    this.currentInfo = q.onInfo || null;
     if (this.worker) {
       this.worker.postMessage({ cmd: 'go', id: this.currentId, ...q.params });
     } else {
@@ -115,7 +127,7 @@ class EngineCtl {
           result = this.local.go({
             ...q.params,
             movetime: Math.min(q.params.movetime || 1500, 2000),
-            onInfo: info => { if (id === this.currentId && this.onInfo) this.onInfo({ id, ...info }); },
+            onInfo: info => { if (id === this.currentId && this.currentInfo) this.currentInfo({ id, ...info }); },
           });
         } catch (e) { result = { bestmove: null, error: String(e) }; }
         this.handle({ type: 'bestmove', id, ...result });
@@ -143,6 +155,7 @@ const S = {
     lines: [],                     // latest info per multipv
     report: null,                  // {evals, mates, best, classes, accW, accB}
     reportRunning: false,
+    reportToken: 0,                // artınca süren rapor döngüsü kendini durdurur
   },
   editor: { pos: new Position(START_FEN), brush: 'cursor' },
   shapes: [],       // user-drawn {from,to,color} (from===to → circle)
@@ -787,6 +800,7 @@ function startGame(startFen) {
     S.play.tc = { base, inc };
   }
 
+  S.ana.reportToken++; // yeni oyun süren raporu iptal eder
   S.game = { startFen: startFen || START_FEN, moves: [], result: null };
   S.line = S.game;
   S.view = -1;
@@ -825,10 +839,14 @@ async function engineMove() {
   if (level <= 4) params.level = level;
   else { params.movetime = LEVEL_TIME[level]; params.depth = 64; }
 
-  const res = await engine.request(params);
+  let res = null;
+  for (let attempt = 0; attempt < 3 && !res; attempt++) {
+    res = await engine.request(params);
+    if (!S.play.active || S.play.over) { S.play.thinking = false; $('engine-status').textContent = ''; return; }
+  }
   S.play.thinking = false;
   $('engine-status').textContent = '';
-  if (!res || !S.play.active || S.play.over) return;
+  if (!res) return;
   if (!res.bestmove) { checkGameEnd(); return; }
 
   // make sure we're at the live end of the mainline
@@ -1003,7 +1021,7 @@ function requestLiveAnalysis() {
     depth: S.opts.anaTime === 0 ? 40 : 30,
     multipv: S.ana.multipv,
   };
-  engine.onInfo = info => {
+  const onInfo = info => {
     if (seq !== S.anaSeq) return;
     const k = (info.multipv || 1) - 1;
     S.ana.lines[k] = info;
@@ -1023,7 +1041,7 @@ function requestLiveAnalysis() {
     }
     renderEngineLines();
   };
-  engine.request(params).then(res => {
+  engine.request(params, onInfo).then(res => {
     if (seq !== S.anaSeq || !res) return;
     // final lines from result (may include deeper info)
     if (res.lines && res.lines.length) {
@@ -1080,7 +1098,7 @@ function renderEngineLines() {
 $('engine-toggle').addEventListener('change', e => {
   S.ana.on = e.target.checked;
   if (S.ana.on) requestLiveAnalysis();
-  else { S.anaSeq++; engine.stop(); renderEngineLines(); drawShapes(); }
+  else { S.anaSeq++; engine.cancel(); renderEngineLines(); drawShapes(); }
 });
 $('multipv-select').addEventListener('change', e => {
   S.ana.multipv = +e.target.value;
@@ -1099,12 +1117,23 @@ async function runFullAnalysis() {
   progWrap.classList.remove('hidden');
   $('report').classList.add('hidden');
 
+  const myToken = ++S.ana.reportToken;
+  const reportAborted = () => {
+    if (S.ana.reportToken !== myToken) {
+      S.ana.reportRunning = false;
+      progWrap.classList.add('hidden');
+      return true;
+    }
+    return false;
+  };
+
   const n = S.game.moves.length;
   const fens = [S.game.startFen];
   for (const mv of S.game.moves) fens.push(mv.fenAfter);
 
   const evals = [], mates = [], bests = [], seconds = [], legals = [];
   for (let i = 0; i <= n; i++) {
+    if (reportAborted()) return;
     fill.style.width = (i / (n + 1) * 100) + '%';
     ptext.textContent = `Konum ${i + 1} / ${n + 1} inceleniyor…`;
     const pos = new Position(fens[i]);
@@ -1120,7 +1149,8 @@ async function runFullAnalysis() {
     }
     // two lines: the second-best move feeds "great/brilliant" detection
     const res = await engine.request({ fen: fens[i], movetime: perMove, depth: 30, multipv: 2 });
-    if (!res) { legals.pop(); i--; continue; } // superseded (shouldn't happen) → retry
+    if (reportAborted()) return;
+    if (!res) { legals.pop(); i--; continue; } // superseded → retry
     const stm = fens[i].split(' ')[1];
     let cpW = stm === 'w' ? res.score : -res.score;
     let mateW = res.mate != null ? (stm === 'w' ? res.mate : -res.mate) : null;
@@ -1324,6 +1354,7 @@ $('btn-import').addEventListener('click', () => {
 });
 
 function loadGame(startFen, moves) {
+  S.ana.reportToken++;
   S.game = { startFen, moves, result: null };
   S.line = S.game;
   S.view = moves.length - 1;
@@ -1548,7 +1579,8 @@ function switchMode(mode) {
   if (S.mode === mode) return;
   S.mode = mode;
   S.anaSeq++;
-  engine.stop();
+  S.ana.reportToken++; // varsa süren oyun raporunu iptal et
+  engine.cancel();
   S.selected = -1; S.dests = []; S.shapes = []; S.hintArrow = null;
   document.querySelectorAll('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
   $('panel-play').classList.toggle('hidden', mode !== 'play');
@@ -1596,9 +1628,12 @@ $('btn-settings').addEventListener('click', e => {
 });
 document.addEventListener('pointerdown', e => {
   if (!settingsPanel.classList.contains('hidden') &&
-      !e.target.closest('#settings-panel') && !e.target.closest('#btn-settings'))
+      !e.target.closest('#settings-panel') && !e.target.closest('#btn-settings')) {
     settingsPanel.classList.add('hidden');
-});
+    e.stopPropagation(); // paneli kapatan tık tahtaya/başka öğeye işlemesin
+    e.preventDefault();
+  }
+}, true);
 
 function saveOpts() { localStorage.setItem('sb-opts', JSON.stringify(S.opts)); }
 function applyOptsToUI() {
