@@ -86,9 +86,15 @@ class EngineCtl {
   request(params) {
     return new Promise(resolve => {
       if (this.queued) this.queued.resolve(null);
-      this.queued = { params, resolve };
+      this.queued = { params: { cpu: S.opts.cpu, ...params }, resolve };
+      if (this.busy) this.stop(); // break out of a running (possibly infinite) search
       this.pump();
     });
+  }
+
+  setOption(opts) {
+    if (this.worker) this.worker.postMessage({ cmd: 'setoption', ...opts });
+    else if (this.local && opts.hashMb) this.local.resizeTT(opts.hashMb);
   }
   pump() {
     if (this.busy || !this.queued) return;
@@ -131,6 +137,7 @@ const S = {
     active: false, engineColor: SC.BLACK, level: 5, useBook: true,
     tc: null, clocks: { w: 0, b: 0 }, timer: null, thinking: false, over: null,
   },
+  opts: { cpu: 100, anaTime: 4000, hashMb: 32 }, // motor kaynak ayarları
   ana: {
     on: true, multipv: 3, movetime: 4000,
     lines: [],                     // latest info per multipv
@@ -992,8 +999,8 @@ function requestLiveAnalysis() {
   const params = {
     fen: S.line.startFen,
     moves: lineUcis(S.view),
-    movetime: S.ana.movetime,
-    depth: 30,
+    movetime: S.opts.anaTime,          // 0 → sonsuz (dilimli arama, durdurulabilir)
+    depth: S.opts.anaTime === 0 ? 40 : 30,
     multipv: S.ana.multipv,
   };
   engine.onInfo = info => {
@@ -1581,6 +1588,42 @@ $('theme-select').addEventListener('change', e => {
   localStorage.setItem('sb-theme', e.target.value);
 });
 
+// ================================================================ engine settings
+const settingsPanel = $('settings-panel');
+$('btn-settings').addEventListener('click', e => {
+  e.stopPropagation();
+  settingsPanel.classList.toggle('hidden');
+});
+document.addEventListener('pointerdown', e => {
+  if (!settingsPanel.classList.contains('hidden') &&
+      !e.target.closest('#settings-panel') && !e.target.closest('#btn-settings'))
+    settingsPanel.classList.add('hidden');
+});
+
+function saveOpts() { localStorage.setItem('sb-opts', JSON.stringify(S.opts)); }
+function applyOptsToUI() {
+  $('cpu-range').value = S.opts.cpu;
+  $('cpu-label').textContent = '%' + S.opts.cpu;
+  $('ana-time-select').value = String(S.opts.anaTime);
+  $('hash-select').value = String(S.opts.hashMb);
+}
+$('cpu-range').addEventListener('input', () => {
+  S.opts.cpu = +$('cpu-range').value;
+  $('cpu-label').textContent = '%' + S.opts.cpu;
+  saveOpts();
+  if (S.mode === 'analysis') requestLiveAnalysis();
+});
+$('ana-time-select').addEventListener('change', () => {
+  S.opts.anaTime = +$('ana-time-select').value;
+  saveOpts();
+  if (S.mode === 'analysis') requestLiveAnalysis();
+});
+$('hash-select').addEventListener('change', () => {
+  S.opts.hashMb = +$('hash-select').value;
+  saveOpts();
+  engine.setOption({ hashMb: S.opts.hashMb });
+});
+
 // ================================================================ init
 function init() {
   const theme = localStorage.getItem('sb-theme') || 'green';
@@ -1588,9 +1631,18 @@ function init() {
   $('theme-select').value = theme;
   if (localStorage.getItem('sb-sound') === '0') { Sound.setEnabled(false); $('btn-sound').textContent = '🔇'; }
 
+  try {
+    const saved = JSON.parse(localStorage.getItem('sb-opts') || '{}');
+    if (saved.cpu) S.opts.cpu = saved.cpu;
+    if (saved.anaTime !== undefined) S.opts.anaTime = saved.anaTime;
+    if (saved.hashMb) S.opts.hashMb = saved.hashMb;
+  } catch (e) { /* varsayılanlar */ }
+  applyOptsToUI();
+
   buildBoard();
   buildPalettes();
   engine.init();
+  if (S.opts.hashMb !== 32) engine.setOption({ hashMb: S.opts.hashMb });
   renderAll();
   renderMoveList();
   $('level-desc').textContent = LEVEL_DESC[5];

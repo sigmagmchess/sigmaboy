@@ -25,8 +25,43 @@
     </select>
     <button id="btn-flip" class="icon-btn" title="Tahtayı çevir (F)">⇅</button>
     <button id="btn-sound" class="icon-btn" title="Ses aç/kapat">🔊</button>
+    <button id="btn-settings" class="icon-btn" title="Motor ayarları">⚙</button>
   </div>
 </header>
+
+<div id="settings-panel" class="hidden">
+  <h3>Motor Ayarları</h3>
+  <div class="form-row">
+    <label>CPU kullanımı <b id="cpu-label">%100</b></label>
+    <input type="range" id="cpu-range" min="25" max="100" step="25" value="100">
+    <div class="settings-note">%100 altı: motor dilimler halinde çalışıp arada uyur —
+      aynı derinliğe daha uzun sürede, daha az işlemciyle ulaşır.</div>
+  </div>
+  <div class="form-row">
+    <label>Analiz süresi (konum başına)</label>
+    <select id="ana-time-select">
+      <option value="2000">2 saniye</option>
+      <option value="4000" selected>4 saniye</option>
+      <option value="8000">8 saniye</option>
+      <option value="15000">15 saniye</option>
+      <option value="30000">30 saniye</option>
+      <option value="0">∞ Sonsuz</option>
+    </select>
+    <div class="settings-note">Sonsuz kipte motor siz konumu değiştirene
+      (veya kapatana) dek düşünmeyi sürdürür.</div>
+  </div>
+  <div class="form-row">
+    <label>Bellek — hash tablosu</label>
+    <select id="hash-select">
+      <option value="16">16 MB</option>
+      <option value="32" selected>32 MB</option>
+      <option value="64">64 MB</option>
+      <option value="128">128 MB</option>
+      <option value="256">256 MB</option>
+    </select>
+    <div class="settings-note">Büyük tablo, uzun analizlerde daha derin arama sağlar.</div>
+  </div>
+</div>
 
 <main id="layout">
   <div id="board-zone">

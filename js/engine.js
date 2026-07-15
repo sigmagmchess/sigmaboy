@@ -362,12 +362,7 @@ class AbortSearch extends Error {}
 class Engine {
   constructor() {
     this.pos = new SC.Position();
-    this.ttKey   = new Int32Array(TT_SIZE);
-    this.ttMove  = new Int32Array(TT_SIZE);
-    this.ttScore = new Int16Array(TT_SIZE);
-    this.ttDepth = new Int8Array(TT_SIZE);
-    this.ttFlag  = new Uint8Array(TT_SIZE);
-    this.ttAge   = new Uint8Array(TT_SIZE);
+    this.allocTT(TT_SIZE);
     this.age = 0;
     this.killer1 = new Int32Array(MAX_PLY);
     this.killer2 = new Int32Array(MAX_PLY);
@@ -481,6 +476,24 @@ class Engine {
       out += W2[h] * v;
     }
     return ((out * 400) / 524288) | 0;
+  }
+
+  allocTT(entries) {
+    this.ttEntries = entries;
+    this.ttMask = entries - 1;
+    this.ttKey   = new Int32Array(entries);
+    this.ttMove  = new Int32Array(entries);
+    this.ttScore = new Int16Array(entries);
+    this.ttDepth = new Int8Array(entries);
+    this.ttFlag  = new Uint8Array(entries);
+    this.ttAge   = new Uint8Array(entries);
+  }
+
+  // hash table size in megabytes (~13 bytes/entry, rounded to a power of two)
+  resizeTT(mb) {
+    let entries = 1 << 18;
+    while ((entries << 1) * 13 <= mb * 1024 * 1024 && entries < (1 << 25)) entries <<= 1;
+    if (entries !== this.ttEntries) this.allocTT(entries);
   }
 
   rnd() { // xorshift for level-based randomness
@@ -677,7 +690,7 @@ class Engine {
     const isPv = beta - alpha > 1;
 
     // transposition table probe
-    const idx = (pos.hashLo & TT_MASK) >>> 0;
+    const idx = (pos.hashLo & this.ttMask) >>> 0;
     let ttMove = 0;
     if (this.ttKey[idx] === pos.hashHi && this.ttFlag[idx] !== 0) {
       ttMove = this.ttMove[idx];
@@ -1119,52 +1132,87 @@ global.SigmaEngine = EngineAPI;
 // ================================================================ worker glue
 if (typeof importScripts === 'function' && typeof postMessage === 'function') {
   const engine = new Engine();
-  let searching = false;
-  let pending = null;   // last received go/position while searching
+  let busy = false;
   let stopRequested = false;
+  let pending = null;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  function runGo(payload) {
-    searching = true;
+  async function runGo(payload) {
+    busy = true;
     stopRequested = false;
     const id = payload.id;
+    const cpu = Math.max(25, Math.min(100, payload.cpu || 100));
+    const isWeak = payload.level && payload.level <= 4;
+    const infinite = !payload.movetime && !isWeak;
 
-    // async iterative wrapper: run whole go() but yield between multipv/none.
-    // go() itself respects movetime; stop() aborts via time-check path.
-    Promise.resolve().then(() => {
-      let result;
-      try {
-        result = engine.go({
-          depth: payload.depth,
-          movetime: payload.movetime,
-          multipv: payload.multipv,
-          level: payload.level,
-          useBook: payload.useBook,
-          onInfo: info => postMessage({ type: 'info', id, ...info }),
-        });
-      } catch (e) {
-        result = { bestmove: null, error: String(e && e.message || e) };
+    // suppress out-of-order info lines when the sliced search restarts iterations
+    const maxDepthSeen = Object.create(null);
+    const onInfo = info => {
+      const k = info.multipv || 1;
+      if (info.depth >= (maxDepthSeen[k] || 0)) {
+        maxDepthSeen[k] = info.depth;
+        postMessage({ type: 'info', id, ...info });
       }
-      searching = false;
-      postMessage({ type: 'bestmove', id, ...result });
-      if (pending) { const p = pending; pending = null; handle(p); }
-    });
+    };
+
+    let result = null;
+    try {
+      if (isWeak || (!infinite && cpu >= 100)) {
+        // single-shot search
+        result = engine.go({ ...payload, onInfo });
+      } else {
+        /*
+         * sliced search: run bounded work slices; the transposition table
+         * carries progress across slices, and yielding between slices lets
+         * "stop" / new "go" messages through. cpu<100 sleeps between slices
+         * (duty cycle): %50 → half the CPU, same depth in twice the time.
+         */
+        const sliceMs = infinite ? 600 : 200;
+        const maxDepth = payload.depth || 64;
+        let workLeft = infinite ? Infinity : payload.movetime;
+        let firstBook = payload.useBook;
+        while (!stopRequested && workLeft > 0) {
+          const w = Math.min(sliceMs, workLeft);
+          const r = engine.go({ ...payload, useBook: firstBook, movetime: w, depth: maxDepth, onInfo });
+          firstBook = false;
+          if (r && r.bestmove) result = r;
+          if (r && r.book) break;                                    // opening book hit
+          workLeft -= w;
+          const dReached = r && r.lines && r.lines[0] ? r.lines[0].depth : 0;
+          if (dReached >= maxDepth) break;                           // depth cap reached
+          if (r && r.mate != null && !infinite) break;               // forced mate found
+          if (cpu < 100) await sleep(Math.max(10, (w * (100 - cpu)) / cpu));
+          else await sleep(0);                                       // let messages in
+        }
+      }
+    } catch (e) {
+      result = { bestmove: null, error: String((e && e.message) || e) };
+    }
+    busy = false;
+    postMessage({ type: 'bestmove', id, ...(result || { bestmove: null, pv: [], lines: [] }) });
+    if (pending) { const p = pending; pending = null; handle(p); }
   }
 
   function handle(data) {
     switch (data.cmd) {
       case 'position':
-        if (searching) { engine.stop(); pending = data; return; }
+        if (busy) { stopRequested = true; engine.stop(); pending = data; return; }
         engine.setPosition(data.fen, data.moves);
         postMessage({ type: 'ready', id: data.id });
         break;
       case 'go':
-        if (searching) { engine.stop(); pending = data; return; }
+        if (busy) { stopRequested = true; engine.stop(); pending = data; return; }
         if (data.fen !== undefined) engine.setPosition(data.fen, data.moves);
         runGo(data);
         break;
       case 'stop':
+        stopRequested = true;
         engine.stop();
         pending = null;
+        break;
+      case 'setoption':
+        if (data.hashMb) engine.resizeTT(data.hashMb);
+        postMessage({ type: 'ready', id: data.id });
         break;
       case 'newgame':
         engine.clearTables();

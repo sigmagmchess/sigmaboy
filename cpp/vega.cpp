@@ -598,7 +598,7 @@ static int evaluate(const Position& pos) {
 // ----------------------------------------------------------------- search
 static const int INF = 32000, MATE = 31000, MATE_BOUND = 30000;
 static const int MAX_PLY = 96;
-static const size_t TT_SIZE = 1 << 22, TT_MASK = TT_SIZE - 1;
+static const size_t TT_SIZE = 1 << 22;
 enum { TT_EXACT = 1, TT_LOWER = 2, TT_UPPER = 3 };
 
 struct TTEntry { uint64_t key; int32_t move; int16_t score; int8_t depth; uint8_t flag; uint8_t age; };
@@ -613,6 +613,7 @@ static void initLMR() {
 struct Engine {
   Position pos;
   vector<TTEntry> tt;
+  size_t ttMask = TT_SIZE - 1;
   uint8_t age = 0;
   int killer1[MAX_PLY] = {0}, killer2[MAX_PLY] = {0};
   int history[2 * 7 * 128] = {0};
@@ -626,6 +627,15 @@ struct Engine {
   bool aborted = false;
 
   Engine() { tt.resize(TT_SIZE); }
+
+  // UCI "Hash" option (megabytes) → power-of-two entry count
+  void resizeTT(long mb) {
+    size_t entries = 1 << 16;
+    while ((entries << 1) * sizeof(TTEntry) <= size_t(mb) * 1024 * 1024 && entries < (size_t(1) << 26))
+      entries <<= 1;
+    tt.assign(entries, TTEntry{});
+    ttMask = entries - 1;
+  }
 
   void clearTables() {
     fill(tt.begin(), tt.end(), TTEntry{});
@@ -783,7 +793,7 @@ struct Engine {
 
     bool isPv = beta - alpha > 1;
 
-    size_t idx = pos.hash & TT_MASK;
+    size_t idx = pos.hash & ttMask;
     TTEntry& e = tt[idx];
     int ttMove = 0;
     if (e.key == pos.hash && e.flag != 0) {
@@ -1070,11 +1080,19 @@ int main() {
     if (cmd == "uci") {
       printf("id name VEGA 1.0\n");
       printf("id author SigmaBoy project\n");
+      printf("option name Hash type spin default 64 min 16 max 1024\n");
       printf("uciok\n");
       fflush(stdout);
     } else if (cmd == "isready") {
       printf("readyok\n");
       fflush(stdout);
+    } else if (cmd == "setoption") {
+      string tok, name, value;
+      while (ss >> tok) {
+        if (tok == "name") { ss >> name; }
+        else if (tok == "value") { ss >> value; }
+      }
+      if (name == "Hash" && !value.empty()) eng.resizeTT(atol(value.c_str()));
     } else if (cmd == "ucinewgame") {
       eng.clearTables();
     } else if (cmd == "position") {

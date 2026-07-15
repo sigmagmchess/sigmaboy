@@ -59,6 +59,22 @@ body {
 }
 .icon-btn:hover { background: var(--card2); }
 
+/* ---------------------------------------------------------- settings panel */
+#settings-panel {
+  position: absolute;
+  top: 54px; right: 16px;
+  z-index: 50;
+  width: 320px;
+  background: var(--card);
+  border: 1px solid var(--card2);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.6);
+}
+#settings-panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+.settings-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
+
 /* ---------------------------------------------------------- layout */
 #layout {
   flex: 1;
