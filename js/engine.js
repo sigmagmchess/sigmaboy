@@ -628,8 +628,22 @@ class Engine {
     const pos = this.pos;
     if (ply >= MAX_PLY - 1) return this.eval_(pos);
 
+    // TT probe: any stored depth bounds a quiescence node
+    const idx = (pos.hashLo & this.ttMask) >>> 0;
+    let ttMove = 0;
+    if (this.ttKey[idx] === pos.hashHi && this.ttFlag[idx] !== 0) {
+      ttMove = this.ttMove[idx];
+      let ts = this.ttScore[idx];
+      if (ts > MATE_BOUND) ts -= ply; else if (ts < -MATE_BOUND) ts += ply;
+      const f = this.ttFlag[idx];
+      if (f === TT_EXACT) return ts;
+      if (f === TT_LOWER && ts >= beta) return ts;
+      if (f === TT_UPPER && ts <= alpha) return ts;
+    }
+
+    const origAlpha = alpha;
     const inCheck = pos.inCheck();
-    let best;
+    let best, bestMove = 0;
     if (inCheck) {
       best = -MATE + ply; // will be overwritten unless mated
     } else {
@@ -639,7 +653,7 @@ class Engine {
     }
 
     const moves = pos.genMoves(!inCheck);
-    const scores = this.scoreMoves(moves, 0, ply);
+    const scores = this.scoreMoves(moves, ttMove, ply);
     let legal = 0;
     for (let i = 0; i < moves.length; i++) {
       const m = this.pickMove(moves, scores, i);
@@ -657,6 +671,7 @@ class Engine {
       this.unmakeNN();
       if (score > best) {
         best = score;
+        bestMove = m;
         if (score > alpha) {
           alpha = score;
           if (alpha >= beta) break;
@@ -664,6 +679,18 @@ class Engine {
       }
     }
     if (inCheck && legal === 0) return -MATE + ply;
+
+    // store as depth-0: never displaces deeper same-generation entries
+    if (this.ttFlag[idx] === 0 || this.ttAge[idx] !== this.age || this.ttDepth[idx] <= 0) {
+      let ss = best;
+      if (ss > MATE_BOUND) ss += ply; else if (ss < -MATE_BOUND) ss -= ply;
+      this.ttKey[idx] = pos.hashHi;
+      this.ttMove[idx] = bestMove;
+      this.ttScore[idx] = ss;
+      this.ttDepth[idx] = 0;
+      this.ttFlag[idx] = best >= beta ? TT_LOWER : best > origAlpha ? TT_EXACT : TT_UPPER;
+      this.ttAge[idx] = this.age;
+    }
     return best;
   }
 
