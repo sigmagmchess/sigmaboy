@@ -142,7 +142,11 @@ SEE. Arama vega.cpp ile aynı. Başlangıç pozisyonunda **1,07M düğüm/sn,
 
 Ek özellikler:
 - **Lazy SMP**: `setoption name Threads value N` (1-8) — paylaşımlı TT
-  üzerinde yardımcı arayıcılar; çok çekirdekte belirgin güç artışı
+  üzerinde kademeli derinlikli yardımcı arayıcılar, atomik paylaşımlı
+  süre sınırı. Varsayılan 1 (hiç iş parçacığı açmaz, sıfır ek yük).
+  Gerçek çok çekirdekli donanımda belirgin güç artışı sağlar; not: bu
+  değerlendirme ortamı gerçek 4-çekirdek paralelliği sunmadığından
+  buradaki kazanç yalnızca TT paylaşımından gelen ~+1 derinliktir
 - **selfplay N movetime seed**: NNUE eğitim verisi üretimi
   (`fen;beyaz_cp;sonuç` satırları; rastgele açılış + erken hükme bağlama)
 

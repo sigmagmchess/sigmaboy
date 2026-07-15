@@ -649,6 +649,7 @@ static size_t g_ttMask = (size_t(1) << 22) - 1;
 static atomic<bool> g_stop{false};
 static atomic<uint64_t> g_nodes{0};
 static int g_threads = 1;
+static atomic<long long> g_deadlineMs{0}; // epoch ms; 0 = no deadline
 
 static int LMR_TABLE[64][64];
 static void initLMR() {
@@ -694,11 +695,13 @@ struct Engine {
   }
 
   void checkTime() {
-    if ((nodes & 2047) == 0) {
+    if ((nodes & 1023) == 0) {
       if (g_stop.load(memory_order_relaxed)) { aborted = true; return; }
-      if (!isHelper && useDeadline && Clock::now() > deadline) {
-        aborted = true;
-        g_stop.store(true, memory_order_relaxed);
+      long long dl = g_deadlineMs.load(memory_order_relaxed);
+      if (dl) {
+        long long now = chrono::duration_cast<chrono::milliseconds>(
+            Clock::now().time_since_epoch()).count();
+        if (now > dl) { aborted = true; g_stop.store(true, memory_order_relaxed); }
       }
     }
   }
@@ -1024,6 +1027,10 @@ struct Engine {
     if (useDeadline) {
       deadline = t0 + chrono::milliseconds(movetimeMs);
       softDeadline = t0 + chrono::milliseconds(movetimeMs * 6 / 10);
+      long long nowMs = chrono::duration_cast<chrono::milliseconds>(t0.time_since_epoch()).count();
+      g_deadlineMs.store(nowMs + movetimeMs, memory_order_relaxed);
+    } else {
+      g_deadlineMs.store(0, memory_order_relaxed);
     }
     age++;
     memset(killer1, 0, sizeof(killer1));
