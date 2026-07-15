@@ -972,6 +972,8 @@ struct Engine {
 
     int bestMove = rootMoves[0], bestScore = -INF;
     int prevScore = 0;
+    // subtree node counts from the last completed iteration (root ordering)
+    vector<pair<int, uint64_t>> rootCnt;
 
     for (int depth = 1; depth <= maxDepth; depth++) {
       int alpha = depth >= 5 ? prevScore - 35 : -INF;
@@ -981,9 +983,21 @@ struct Engine {
         int a = alpha;
         int iterBest = 0, iterScore = -INF;
         scoreMoves(rootMoves, rootScores, n, bestMove, 0);
+        // big subtrees first (they hold the critical replies); PV move stays on top
+        for (auto& pr : rootCnt) {
+          for (int i = 0; i < n; i++) {
+            if (rootMoves[i] == pr.first && rootScores[i] < 2000000000) {
+              uint64_t c = pr.second > 1899000000ULL ? 1899000000ULL : pr.second;
+              rootScores[i] = int(1000000 + c);
+              break;
+            }
+          }
+        }
+        vector<pair<int, uint64_t>> cnt;
 
         for (int i = 0; i < n; i++) {
           int m = pickMove(rootMoves, rootScores, n, i);
+          uint64_t n0 = nodes;
           pos.make(m);
           int score;
           if (i == 0) score = -search(depth - 1, -beta, -a, 1, true);
@@ -992,6 +1006,7 @@ struct Engine {
             if (score > a && score < beta && !aborted) score = -search(depth - 1, -beta, -a, 1, true);
           }
           pos.unmake();
+          cnt.push_back({m, nodes - n0});
           if (aborted) break;
           if (score > iterScore || i == 0) {
             iterScore = score;
@@ -1009,6 +1024,7 @@ struct Engine {
         if (aborted) break;
         if (iterScore <= alpha && alpha > -INF) { alpha = max(-INF, alpha - 150); continue; }
         if (iterScore >= beta && beta < INF)   { beta = min(INF, beta + 150); continue; }
+        rootCnt = cnt;
 
         bestMove = iterBest ? iterBest : bestMove;
         bestScore = iterScore;

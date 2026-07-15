@@ -45,7 +45,9 @@ Ekstra: ~50 ana varyanttan kurulan **açılış kitabı** (670 pozisyon), 9 gü�
 Sürüm karşılaştırması (150 ms/hamle, kendi kendine maç):
 - v1 → v2: **+13 =4 -3 (%75) ≈ +190 Elo**
 - v2 → v2s (hızlı chess.js yığınları): aynı sürede ~%15 daha fazla düğüm, 3 sn'de derinlik 15→16
-- v2s → v2s+qTT (quiescence TT): **+11 =10 -9 (%53) ≈ +23 Elo** — hem JS hem C++ sürümüne uygulandı
+- v2s → v2s+qTT (quiescence TT): **+11 =10 -9 (%53) ≈ +23 Elo**
+- +qTT → +kök alt-ağaç sıralaması: **+13 =6 -11 (%53) ≈ +23 Elo** — iki yama da JS ve C++ sürümlerinde
+- Denenen ve maçla REDDEDİLEN: contHist+malus paketi (%48), NNUE kipleri (%3-%17), singular extensions (%30) — motor yalnızca ölçümle kazanan değişiklikleri taşır
 
 **Elo kalibrasyonu** — Stockfish 18 Lite (WASM) sınırlı güç kipine (UCI_Elo) karşı,
 her basamak 12 oyun, SigmaBoy 150 ms/hamle:
